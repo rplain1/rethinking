@@ -1,0 +1,317 @@
+---
+title: "Chapter 4"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(rethinking)
+```
+
+
+```{r}
+pos <- replicate(1000, sum(runif(16, -1, 1)))
+```
+
+Adding random samples form a distribution results in normally distributed sums. 
+
+Each random sample is considered a fluctuation from the average value. Adding the fluctuations together begin to cancel each other out. 
+
+```{r}
+prod(1 + runif(12, 0, 0.1))
+
+growth <- replicate(1e4, prod(1 + runif(12, 0, 0.1)))
+dens(growth, norm.comp = TRUE)
+```
+
+```{r}
+big <- replicate(1e4, prod(1 + runif(12, 0, 0.5)))
+small <- replicate(1e4, prod(1 + runif(12, 0, 0.1)))
+
+dens(big, norm.comp = TRUE)
+dens(small, norm.comp = TRUE)
+
+#log scale for larger multiplicatives
+log.big <- replicate(1e4, log(prod(1 + runif(12, 0, 0.5))))
+dens(log.big, norm.comp = TRUE)
+
+# WOW almost perfectly normal
+
+```
+
+
+## Gaussian Distributions
+
+1. Ontological - study of existence
+2. Epistemological - theory of knowledge
+
+Gaussian struggles with microprocesses, but can do useful work even without identifying the process. 
+e.g. statistical model of height before understanding the biology of height
+
+
+
+```{r}
+w <- 4; n <- 9;
+p_grid <- seq(from=0, to=1, length.out=100)
+prior <- rep(1, 100)
+posterior <- dbinom(w, n, p_grid) * prior
+posterior <- posterior/sum(posterior)
+plot(p_grid, posterior)
+```
+
+
+
+```{r}
+data("Howell1")
+d <- Howell1
+
+
+str(d)
+precis(d)
+
+
+d2 <- d[d$age >= 18, ]
+```
+
+
+```{r}
+dens(d2$height, norm.comp = T)
+
+
+# PLOT YOUR PRIORS!
+curve(dnorm(x, 178, 20), from=100, to=250)
+
+curve(dunif(x, 0, 50), from=-10, to=60)
+
+```
+
+## Prior Predictive Checks
+
+```{r}
+
+sample_mu <- rnorm(1e4, 178, 100)
+sample_sigma <- runif(1e4, 0, 50)
+
+prior_h <- rnorm(1e4, sample_mu, sample_sigma)
+
+dens(prior_h, norm.comp = T)
+
+```
+
+
+```{r}
+mu.list <- seq(from=150, to=160, length.out = 100)
+sigma.list <- seq(from=7, to=9, length.out=100)
+post <- expand.grid(mu=mu.list, sigma=sigma.list)
+post$LL <- sapply(1:nrow(post), function(i) sum(dnorm(d2$height, post$mu[i], post$sigma[i], log=TRUE))) 
+
+post$prod <- post$LL + dnorm(post$mu, 178, 20, TRUE) + dunif(post$sigma, 0, 50, TRUE)
+post$prob <- exp(post$prod - max(post$prod))
+```
+
+```{r}
+
+
+contour_xyz(post$mu, post$sigma, post$prob)
+image_xyz(post$mu, post$sigma, post$prob)
+
+```
+
+
+```{r}
+sample.rows <- sample(1:nrow(post), size = 1e4, replace = TRUE, prob = post$prob)
+
+sample.mu <- post$mu[sample.rows]
+sample.sigma <- post$sigma[sample.rows]
+
+plot(sample.mu, sample.sigma, cex=1, pch=16, col=col.alpha(rangi2, 0.2))
+```
+
+Describe the samples of the parameters just as you would with data, and ultimately use the combination of samples(?)
+
+*marginal* posterior desnsities - averaging over the other parameters
+
+```{r}
+dens(sample.mu)
+dens(sample.sigma) #long right tail
+```
+
+Why it is a long right tail is complex, but in short - variance needs to be positive., and there must be more uncertainty about how big the variance (or standard deviation) is than how small it is
+
+```{r}
+PI(sample.mu)
+PI(sample.sigma)
+```
+
+```{r}
+d3 <- sample(d2$height, size= 20)
+```
+
+```{r}
+mu.list <- seq(from=150, to=170, length.out = 200)
+sigma.list <- seq(from=4, to=20, length.out=200)
+post2 <- expand.grid(mu=mu.list, sigma=sigma.list)
+post2$LL <- sapply(1:nrow(post2), function(i) sum(dnorm(d3, post2$mu[i], post2$sigma[i], log=TRUE))) 
+
+post2$prod <- post2$LL + dnorm(post2$mu, 178, 20, TRUE) + dunif(post2$sigma, 0, 50, TRUE)
+post2$prob <- exp(post2$prod - max(post2$prod))
+
+sample2.rows <- sample(1:nrow(post2), size = 1e4, replace = TRUE, prob = post2$prob)
+
+sample2.mu <- post2$mu[sample2.rows]
+sample2.sigma <- post2$sigma[sample2.rows]
+
+plot(sample2.mu, sample2.sigma, cex=1, pch=16, col=col.alpha(rangi2, 0.2), xlab='mu', ylab='sigma')
+```
+
+```{r}
+dens(sample2.sigma, norm.comp = TRUE)
+```
+
+## Quadratic Approximation
+
+```{r}
+library(rethinking)
+data("Howell1")
+d2 <- Howell1 |> filter(age >= 18)
+```
+
+```{r}
+flist <- alist(
+  height ~ dnorm(mu, sigma),
+  mu ~ dnorm(178, 20),
+  sigma ~ dunif(0, 50)
+)
+
+m4.1 <- quap(flist, data = d2)
+precis(m4.1)
+```
+
+Very extreme prior at 178
+
+```{r}
+m4.2 <- quap(
+    alist(
+      height ~ dnorm(mu, sigma),
+      mu ~ dnorm(178, 0.1),
+      sigma ~ dunif(0, 50)
+    ), data = d2
+)
+
+
+precis(m4.2)
+```
+
+Before the mean was at 154, now with the extreme prior - all the data is still only able to update it to 177. Well above the mean and upper percentile of the distribution previously calculated. 
+
+To account for this, the sigma parameter significantly changed to a higher value!!
+
+### Variance Covariance Matrix
+
+Tells us how each parameter relates to every other parameter in the posterior distribution. 
+
+```{r}
+vcov(m4.1)
+diag(vcov(m4.1)) |> sqrt() # take the square root to get the 
+
+cov2cor(vcov(m4.1))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

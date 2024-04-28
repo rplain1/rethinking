@@ -1,0 +1,253 @@
+---
+title: "Chapter 2 - Practice"
+format: html
+---
+
+```{r}
+#| echo: false
+#| warning: false
+library(tidyverse)
+```
+
+
+## Chapter 2
+
+### Easy
+
+#### 2E1. Probability of rain on Monday is 
+
+$Pr(Rain|Monday)$
+
+#### 2E2. Below is the probability of Monday, given that it is raining
+
+$Pr(Monday|Rain)$
+
+#### 2E4. The statement “the probability of water is 0.7” 
+This refers to the likelihood that if you tossed the globe, your index finger would land on water 70% of the time. A single toss could result in land. A few tosses could result in land. Overall, as the number of tosses approaches infinity, the number of waters will converge to 70% of the total.
+
+### Medium
+
+#### 2M1. Grid approximate posterior distribution using a uniform prior for the following:
+* W, W, W
+* W, W, W, L
+* L, W, W, L, W, W, W
+
+```{r}
+#| echo: false
+
+create_data <- function(A, B, prior="uniform") {
+  
+    tibble(p_grid            = seq(from = 0, to = 1, length.out = 20),  # define grid
+           prior             =
+             case_when(prior == 'uniform' ~ 1,
+                       prior == 'half' ~ c(rep(0, 10), rep(1, 10)),
+                       TRUE ~ NA)) |> 
+           #prior = exp(-5*abs(p_grid - 0.5))) |> 
+           #prior = c(rep(0, 10), rep(1, 10))) %>%  
+           #prior = c(rep(1, 10), rep(0, 10))) %>%  # define prior
+    mutate(likelihood      = dbinom(A, size = B, prob = p_grid)) %>%  # compute likelihood at each value in grid
+    mutate(unstd_posterior = likelihood * prior) %>%                  # compute product of likelihood and prior
+    mutate(posterior       = unstd_posterior / sum(unstd_posterior))  # standardize the posterior, so it sums to 1
+  
+}
+
+create_data(3, 3) %>% 
+  ggplot(aes(x = p_grid, y = posterior)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "W, W, W (Uniform Prior)",
+    subtitle = "20 points",
+       x = "probability of water",
+       y = "posterior probability") +
+  theme(panel.grid = element_blank()) 
+
+create_data(3, 4) %>% 
+  ggplot(aes(x = p_grid, y = posterior)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "W, W, W, L (Uniform Prior)",
+    subtitle = "20 points",
+       x = "probability of water",
+       y = "posterior probability") +
+  theme(panel.grid = element_blank()) 
+
+create_data(5, 7) %>% 
+  ggplot(aes(x = p_grid, y = posterior)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "L, W, W, L, W, W, W (Uniform Prior)",
+    subtitle = "20 points",
+       x = "probability of water",
+       y = "posterior probability") +
+  theme(panel.grid = element_blank()) 
+  
+```
+
+#### 2M2. Same grid apprixmation with p < 0.5 set to 0, p >= 0.5 set to a constant
+
+```{r}
+#| echo: false
+
+create_data(3, 3, "half") %>% 
+  ggplot(aes(x = p_grid, y = posterior)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "W, W, W (Half Positive Prior)",
+    subtitle = "20 points",
+       x = "probability of water",
+       y = "posterior probability") +
+  theme(panel.grid = element_blank()) 
+
+create_data(3, 4, "half") %>% 
+  ggplot(aes(x = p_grid, y = posterior)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "W, W, W, L (Half Positive Prior)",
+    subtitle = "20 points",
+       x = "probability of water",
+       y = "posterior probability") +
+  theme(panel.grid = element_blank()) 
+
+create_data(5, 7, "half") %>% 
+  ggplot(aes(x = p_grid, y = posterior)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "L, W, W, L, W, W, W (Half Positive Prior)",
+    subtitle = "20 points",
+       x = "probability of water",
+       y = "posterior probability") +
+  theme(panel.grid = element_blank()) 
+```
+
+#### 2M3. Mars (100% land) and Earth (70% land) globe are tossed. Show that probability globe was Earth is 0.23 $$P(Earth|land)$$
+
+This can be calculated with Bayes Theorem $$P(A|B) = \frac{P(B|A) * P(A)}{P(B)}$$
+
+$$A = Earth$$
+$$B = Land$$
+$$p(Earth|Land) = \frac{p(Land|Earth) * p(Earth)} {p(Land)}$$
+```{r}
+prob_land_given_earth = 0.3
+prob_land_given_mars = 1.0
+prob_earth = 0.5
+
+prob_land = (0.3 * .5) + ((1 - prob_earth) * prob_land_given_mars)
+
+(prob_land_given_earth * prob_earth) / prob_land
+
+```
+
+
+#### 2M4. Deck with 3 cards. 1 W/W, 1 B/W, 1 B/B. Shown a black card facing up, what is the probability that the other side is also black?
+
+Either: 
+B/B
+B/W
+W/W
+
+Since we see a black card facing up, we know that it is either B/W or B/B. This leaves 2 possible card scenario
+
+```{r}
+card_bb_likelihood <- 2 # 2 oppurtunities for this card based on what is showing
+card_bw_likelihood <- 1 # if it is this, that is its only option showing
+card_ww_likelihood <- 0
+
+likelihood <- c(card_bb_likelihood, card_bw_likelihood, card_ww_likelihood)
+prior <- c(1, 1, 1)
+posterior <- likelihood * prior
+posterior <- posterior / sum(posterior)
+
+posterior[1] 
+```
+
+
+#### 2M5. Now supposed four cards, with another B/B. What is probability that face down is black?
+
+```{r}
+likelihood <- c(card_bb_likelihood, card_bw_likelihood, card_ww_likelihood, card_bb_likelihood)
+prior <- c(1, 1, 1, 1)
+posterior <- likelihood * prior
+posterior <- posterior / sum(posterior)
+
+posterior[1] + posterior[4]
+```
+
+
+#### 2M6. Imagine that black ink is heavy, and so cards with black sides are heavier than cards with white sides. As a result, it’s less likely that a card with black sides is pulled from the bag. So again assume there are three cards: B/B, B/W, and W/W. After experimenting a number of times, you conclude that for every way to pull the B/B card from the bag, there are 2 ways to pull the B/W card and 3 ways to pull the W/W card. Again suppose that a card is pulled and a black side appears face up. Show that the probability the other side is black is now 0.5. Use the counting method, as before.
+
+```{r}
+
+#These never change, we are just adding a prior 
+
+card_bb_likelihood <- 2 # 2 oppurtunities for this card based on what is showing
+card_bw_likelihood <- 1 # if it is this, that is its only option showing
+card_ww_likelihood <- 0
+
+likelihood <- c(card_bb_likelihood, card_bw_likelihood, card_ww_likelihood)
+prior <- c(1, 2, 3) # NEW
+posterior <- likelihood * prior
+posterior <- posterior / sum(posterior)
+
+posterior[1] 
+```
+
+#### 2H1.
+
+```{r}
+# After first birth, likelihood of species A and B is equal to the rate the
+# species give birth to twins
+a_likelihood <- 0.1
+b_likelihood <- 0.2
+
+# Next calculate the posterior probability that the panda belongs to each
+# species, assume species are equally likely
+likelihood <- c(a_likelihood, b_likelihood)
+prior <- c(1, 1) 
+posterior <- likelihood * prior
+posterior <- posterior / sum(posterior)
+posterior
+#> [1] 0.333 0.667
+
+# The probability the next birth is twins is the probability th e panda belongs
+# to each species times the likelihood each species gives birth to twins
+(posterior[1] * a_likelihood) + (posterior[2] * b_likelihood)
+#> [1] 0.167
+```
+
+
+
+#### 2H2. 
+
+```{r}
+# probability of species A
+p_a <- 0.5
+
+# probability of twins, given species A
+p_ta <- 0.1
+
+# probability of twins, given species B
+p_tb <- 0.2
+
+# probability of twins
+p_t <- (p_a * p_ta) + ((1 - p_a) * p_tb)
+
+# probability of species A, given twins (using Bayes' Theorem)
+# (note this is equivalent to `posterior[1]` above)
+p_at <- (p_ta * p_a) / p_t
+p_at
+#> [1] 0.333
+```
+
+If we are looking for draw of distribution, that is when we use the method of posterior = likelihood * prior
+
+If we need exact probability, that is when we can use bayes therom? 
+
+
+
+

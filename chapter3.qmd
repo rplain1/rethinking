@@ -1,0 +1,1042 @@
+---
+title: "chapter3"
+format: html
+---
+
+```{r}
+pr_positive_vampire <- 0.95
+pr_positive_mortal <- 0.01 #1% of 95% positives are wrong? false postives
+pr_vampire <- 0.001
+
+pr_positive <- ( pr_positive_vampire * pr_vampire ) + ( pr_positive_mortal * (1 - pr_vampire) )
+pr_vampire_positive <- pr_positive_vampire*(pr_vampire / pr_positive)
+
+pr_vampire_positive
+```
+
+Take the probability of positve as the likelihood to be positive AND vampire, plus probability of being mortal and test postive for vampire -- ~0.009%
+
+In this case, where a test is 95% accurate with 1% false positive -- AND the likelihood of actually being infected is 0.01%... The positive test actually only indicates a probability of **8.7%** that the patient is infected. 
+
+### More intuitive
+
+* 100,000 people
+- 100 are vampires
+
+* Of 100 vampires, 95 will test positive for vampirism
+* Of 99,900 mortals, 999 will test positive for vampirism
+
+If we test all 100,000 people, what proportion of who test positive will actually be vampires? 
+
+```{r}
+
+95 / (999 + 100) #denominator is positive mortals and all vampire population
+
+```
+
+
+### sample from posterior
+
+```{r}
+
+p_grid <- seq( from=0, to=1, length.out = 1000)
+prob_p <- rep(1, 1000)
+prob_data <- dbinom(6, size=9, prob = p_grid)
+posterior <- prob_data * prob_p
+posterior <- posterior / sum(posterior)
+
+
+samples <- sample(p_grid, prob=posterior, size=1e4, replace = TRUE)
+
+plot(samples)
+rethinking::dens(samples)
+```
+
+### Sampling to Summarize
+
+```{r}
+sum(posterior[p_grid < 0.5])
+
+# if you don't have grid approx, just add up samples less than value and divide by total count
+
+sum(samples < 0.5) / 1e4
+
+sum(samples > 0.5 & samples < 0.75) / 1e4 #61% of posterior probability lies between 0.5 and 0.75
+```
+
+Credible Interval - interval of posterior probability, such as the ones we are working with, may be called
+
+We can also call it a compatibility interval instead, in order to avoid unwarranted implications of confidence and credibility
+
+What it indicates is a range of parameter values compatiblie with the model and data
+
+```{r}
+quantile(samples, 0.8)
+
+quantile(samples, c(0.1, 0.9))
+
+
+```
+
+HDPI is better to capture the highest posterior density interval
+
+### Loss Functions
+
+```{r}
+max(p_grid)
+p_grid[which.max(posterior)]
+rethinking::chainmode(samples, adj = 0.01)
+
+loss <- sapply(p_grid, function(d) sum(posterior*abs(d-p_grid)))
+p_grid[which.min(loss)]
+
+```
+
+
+### Sampling to simulate prediction 
+
+```{r}
+dbinom(0:2, size=2, prob=0.7)
+set.seed(527)
+rbinom(1, size=2, prob=0.7)
+# Two waters in two tosses
+
+rbinom(10, size=2, prob=0.7)
+
+dummy_w <- rbinom(1e5, size=2, prob=0.7)
+table(dummy_w)/1e5
+
+
+dummy_w <- rbinom(1e5, size=9, prob=0.7)
+rethinking::simplehist(dummy_w, xlab="dummy water count")
+
+```
+
+```{r}
+w <- rbinom(1e4, size = 9, prob = 0.6)
+rethinking::simplehist(w)
+
+w <- rbinom(1e4, size=9, prob = samples)
+rethinking::simplehist(w)
+```
+
+
+### BRMS / Tidyverse
+
+
+# Tidyverse ------------------------------
+
+
+```{r}
+library(tidyverse)
+
+tibble(pr_positive_vampire   = .95,
+       pr_positive_mortal    = .01,
+       pr_vampire            = .001) %>% 
+  mutate(pr_positive         = pr_positive_vampire * pr_vampire + pr_positive_mortal * (1 - pr_vampire)) %>% 
+  mutate(pr_vampire_positive = pr_positive_vampire * pr_vampire / pr_positive) %>% 
+  glimpse()
+```
+
+
+```{r}
+# how many grid points would you like?
+n <- 1001
+n_success <- 6
+n_trials  <- 9
+
+(
+  d <-
+  tibble(p_grid     = seq(from = 0, to = 1, length.out = n),
+         # note we're still using a flat uniform prior
+         prior      = 1) %>% 
+  mutate(likelihood = dbinom(n_success, size = n_trials, prob = p_grid)) %>% 
+  mutate(posterior  = (likelihood * prior) / sum(likelihood * prior))
+  )
+
+
+# how many samples would you like?
+n_samples <- 1e4
+
+# make it reproducible
+set.seed(3)
+
+samples <-
+  d %>% 
+  sample_n(size = n_samples, weight = posterior, replace = T)
+
+glimpse(samples)
+
+samples %>% 
+  mutate(sample_number = 1:n()) %>% 
+  
+  ggplot(aes(x = sample_number, y = p_grid)) +
+  geom_line(linewidth = 1/10) +
+  labs(x = "sample number",
+       y = "proportion of water (p)")
+
+samples %>% 
+  ggplot(aes(x = p_grid)) +
+  geom_density(fill = "black") +
+  coord_cartesian(xlim = 0:1) +
+  xlab("proportion of water (p)")
+
+
+d %>% 
+  ggplot(aes(x = p_grid, posterior)) +
+  geom_line(fill = "black") +
+  coord_cartesian(xlim = 0:1) +
+  xlab("proportion of water (p)")
+
+# doesn't work well to overlay them because of different Yaxis
+# the posterior distribution is not as clean as the density from p_grid
+
+d |> 
+ggplot(aes(x = p_grid)) +
+  #geom_density(aes(fill = 'blue'), data = samples, alpha = 0.2) +
+  geom_line(aes(y = posterior), data = d)
+
+```
+
+## Now we have posterior
+
+```{r}
+
+# 0.171
+d %>% 
+  filter(p_grid < .5) %>% 
+  summarise(sum = sum(posterior))
+
+#0.162
+samples %>% 
+  filter(p_grid < .5) %>% 
+  summarise(sum = n() / n_samples)
+
+
+samples %>% 
+  filter(p_grid > .5 & p_grid < .75) %>% 
+  summarise(sum = n() / n_samples)
+
+
+# upper left panel
+d %>% 
+  ggplot(aes(x = p_grid)) +
+  geom_line(aes(y = posterior)) +
+  geom_ribbon(data = d %>% filter(p_grid < .5),
+              aes(ymin = 0, ymax = posterior)) +
+  labs(x = "proportion of water (p)",
+       y = "density")
+
+samples %>% 
+  summarise(`10th percentile` = quantile(p_grid, p = .1),
+            `90th percentile` = quantile(p_grid, p = .9))
+
+
+```
+
+```{r}
+# here we update the `dbinom()` parameters
+n_success <- 3
+n_trials  <- 3
+
+# update `d`
+d <-
+  d %>% 
+  mutate(likelihood = dbinom(n_success, size = n_trials, prob = p_grid)) %>% 
+  mutate(posterior  = (likelihood * prior) / sum(posterior))
+
+# make the next part reproducible
+set.seed(3)
+
+# here's our new samples tibble
+(
+  samples <-
+    d %>% 
+    sample_n(size = n_samples, weight = posterior, replace = T)
+)
+
+quantile(samples$p_grid, prob = c(.25, .75))
+
+tidybayes::median_qi(samples$p_grid, .width = c(.5, .8, .99))
+
+
+```
+
+
+## Point Estimates
+
+```{r}
+d %>% 
+  arrange(desc(posterior))
+```
+
+#### Decision estimates
+
+```{r}
+
+make_loss <- function(our_d){
+  d %>% 
+  mutate(loss = posterior * abs(our_d - p_grid)) %>% 
+  summarise(weighted_average_loss = sum(loss))
+}
+
+(
+  l <-
+  d %>% 
+  select(p_grid) %>% 
+  rename(decision = p_grid) %>% 
+  mutate(weighted_average_loss = purrr::map(decision, make_loss)) %>% 
+  unnest() 
+)
+
+# this will help us find the x and y coordinates for the minimum value
+min_loss <-
+  l %>% 
+  filter(weighted_average_loss == min(weighted_average_loss)) %>% 
+  as.numeric()
+
+# the plot
+l %>%   
+  ggplot(aes(x = decision)) +
+  geom_ribbon(aes(ymin = 0, ymax = weighted_average_loss),
+              fill = "grey75") +
+  geom_vline(xintercept = min_loss[1], color = "white", linetype = 3) +
+  geom_hline(yintercept = min_loss[2], color = "white", linetype = 3) +
+  ylab("expected proportional loss") +
+  theme(panel.grid = element_blank())
+
+samples %>% 
+  summarise(posterior_median = median(p_grid))
+```
+
+### Sampling for Prediction
+
+```{r}
+tibble(n           = 2,
+       probability = .7,
+       w           = 0:2) %>% 
+  mutate(density   = dbinom(w, size = n, prob = probability))
+
+
+set.seed(3)
+rbinom(1, size = 2, prob = .7)
+
+set.seed(3)
+rbinom(10, size = 2, prob = .7)
+
+
+# how many would you like?
+n_draws <- 1e5
+
+set.seed(3)
+d <- tibble(draws = rbinom(n_draws, size = 2, prob = .7))
+
+d %>% 
+  group_by(draws) %>% 
+  count() %>% 
+  mutate(proportion = n / nrow(d))
+
+
+set.seed(3)
+d <- tibble(draws = rbinom(n_draws, size = 9, prob = .7))
+
+# the histogram
+d %>% 
+  ggplot(aes(x = draws)) +
+  geom_histogram(binwidth = 1, center = 0,
+                 color = "grey92", size = 1/10) +
+  scale_x_continuous("dummy water count",
+                     breaks = seq(from = 0, to = 9, by = 2)) +
+  ylab("frequency") +
+  coord_cartesian(xlim = 0:9) +
+  theme(panel.grid = element_blank())
+
+
+n_draws <- 1e5
+
+simulate_binom <- function(n, probability){
+  set.seed(3)
+  rbinom(n_draws, size = n, prob = probability) 
+}
+
+d <-
+  tibble(n = c(3, 6, 9)) %>% 
+  expand(n, probability = c(.3, .6, .9)) %>% 
+  mutate(draws       = map2(n, probability, simulate_binom)) %>% 
+  ungroup() %>% 
+  mutate(n           = str_c("n = ", n),
+         probability = str_c("p = ", probability)) %>% 
+  unnest()
+
+head(d)
+
+d %>% 
+  ggplot(aes(x = draws)) +
+  geom_histogram(binwidth = 1, center = 0,
+                 color = "grey92", size = 1/10) +
+  scale_x_continuous("dummy water count",
+                     breaks = seq(from = 0, to = 9, by = 2)) +
+  ylab("frequency") +
+  #coord_cartesian(xlim = 0:9) +
+  theme(panel.grid = element_blank()) +
+  facet_grid(n ~ probability)
+
+```
+
+## Posterior Uncertainty
+
+```{r}
+# how many grid points would you like?
+n <- 1001
+n_success <- 6
+n_trials  <- 9
+
+(
+  d <-
+  tibble(p_grid     = seq(from = 0, to = 1, length.out = n),
+         # note we're still using a flat uniform prior
+         prior      = 1) %>% 
+  mutate(likelihood = dbinom(n_success, size = n_trials, prob = p_grid)) %>% 
+  mutate(posterior  = (likelihood * prior) / sum(likelihood * prior))
+  )
+
+d %>% 
+  ggplot(aes(x = p_grid)) +
+  geom_ribbon(aes(ymin = 0, ymax = posterior),
+              color = "grey67", fill = "grey67") +
+  geom_segment(data = . %>% 
+                 filter(p_grid %in% c(seq(from = .1, to = .9, by = .1), 3 / 10)),
+               aes(xend = p_grid,
+                   y = 0, yend = posterior, size = posterior),
+               color = "grey33", show.legend = F) +
+  geom_point(data = . %>%
+               filter(p_grid %in% c(seq(from = .1, to = .9, by = .1), 3 / 10)),
+             aes(y = posterior)) +
+  annotate(geom = "text", 
+           x = .08, y = .0025,
+           label = "Posterior probability") +
+  scale_size_continuous(range = c(0, 1)) +
+  scale_x_continuous("probability of water", breaks = c(0:10) / 10) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  theme(panel.grid = element_blank())
+
+n_draws <- 1e5
+
+simulate_binom <- function(probability){
+  set.seed(3)
+  rbinom(n_draws, size = 9, prob = probability) 
+}
+
+d_small <-
+  tibble(probability = seq(from = .1, to = .9, by = .1)) %>% 
+  mutate(draws       = purrr::map(probability, simulate_binom)) %>% 
+  unnest(draws) %>% 
+  mutate(label       = str_c("p = ", probability))
+
+head(d_small)
+
+d_small %>%
+  ggplot(aes(x = draws)) +
+  geom_histogram(binwidth = 1, center = 0,
+                 color = "grey92", size = 1/10) +
+  scale_x_continuous(NULL, breaks = seq(from = 0, to = 9, by = 3)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  labs(subtitle = "Sampling distributions") +
+  #coord_cartesian(xlim = 0:9) +
+  theme(panel.grid = element_blank()) +
+  facet_wrap(~ label, ncol = 9) 
+
+# how many samples would you like?
+n_samples <- 1e4
+
+# make it reproducible
+set.seed(3)
+
+samples <-
+  d %>% 
+  sample_n(size = n_samples, weight = posterior, replace = T) %>% 
+  mutate(w = purrr::map_dbl(p_grid, rbinom, n = 1, size = 9))
+
+glimpse(samples)
+
+
+samples %>% 
+  ggplot(aes(x = w)) +
+  geom_histogram(binwidth = 1, center = 0,
+                 color = "grey92", size = 1/10) +
+  scale_x_continuous("number of water samples",
+                     breaks = seq(from = 0, to = 9, by = 3)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  ggtitle("Posterior predictive distribution") +
+  coord_cartesian(xlim = c(0, 9),
+                  ylim = c(0, 3000)) +
+  theme(panel.grid = element_blank())
+```
+
+# BRMS Practice
+
+```{r}
+library(brms)
+```
+
+Working with model of data `w = 6` and `n = 9`
+
+```{r}
+b3.1 <-
+  brm(data = list(w = 6), 
+      family = binomial(link = "identity"),
+      w | trials(9) ~ 1,
+      # this is a flat prior
+      prior(beta(2, ), class = Intercept),
+      seed = 3,
+      control = list(adapt_delta = .999))
+
+plot(b3.1)
+posterior_summary(b3.1)["b_Intercept", ] %>% 
+  round(digits = 2)
+
+f <-
+  fitted(b3.1, summary = F,
+         scale = "linear") %>% 
+  as_tibble() %>% 
+  set_names("p")
+
+glimpse(f)
+
+
+# f contains probabilities of the model? 
+# if you do not include scale = linear, it iwll return what?
+
+f %>% 
+  ggplot(aes(x = p)) +
+  geom_density(fill = "grey50", color = "grey50") +
+  annotate(geom = "text", 
+           x = .08, y = 2.5,
+           label = "Posterior probability") +
+  scale_x_continuous("probability of water",
+                     breaks = c(0, .5, 1),
+                     limits = c(0, 1)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  theme(panel.grid = element_blank())
+
+```
+
+## Simulation
+
+```{r}
+# the simulation
+set.seed(3)
+
+f <-
+  f %>% 
+  mutate(w = rbinom(n(), size = n_trials,  prob = p))
+
+# the plot
+f %>% 
+  ggplot(aes(x = w)) +
+  geom_histogram(binwidth = 1, center = 0,
+                 color = "grey92", size = 1/10) +
+  scale_x_continuous("number of water samples",
+                     breaks = seq(from = 0, to = 9, by = 3), limits = c(0, 9)) +
+  scale_y_continuous(NULL, breaks = NULL, limits = c(0, 1200)) +
+  ggtitle("Posterior predictive distribution") +
+  theme(panel.grid = element_blank())
+```
+
+
+
+
+
+
+# Excersises
+
+```{r}
+
+p_grid <- seq(from= 0, to = 1, length.out = 1000)
+prior <- rep(1, 1000)
+likelihood <- dbinom(6, size = 9, prob = p_grid)
+posterior <- likelihood * prior
+posterior <- posterior / sum(posterior)
+
+set.seed(100)
+samples <- sample(p_grid, prob=posterior, size = 1e4, replace = TRUE)
+```
+
+
+```{r}
+set.seed(100)
+samples <- sample(p_grid, prob = posterior, size = 1e4, replace = TRUE)
+```
+
+
+## Easy 
+
+#### 3E1.
+
+```{r}
+samples |> 
+  as_tibble() |> 
+  summarise(sum(value < 0.2) / n())
+```
+
+
+0.0004% of samples fall below 20%
+
+#### 3E2.
+
+11% of the samples fall above 80%
+
+#### 3E3.
+
+```{r}
+samples |> 
+  as_tibble() |> 
+  mutate(v = between(value, 0.2, 0.8)) |> 
+  summarise(sum(v) / n())
+```
+
+
+88.8% of the samples fall between 20% and 80%
+
+#### 3E4. 
+
+```{r}
+quantile(samples, 0.2)
+#0.5185
+
+samples |> 
+  as_tibble() |> 
+  summarise(sum(value < quantile(samples, 0.2)) / n())
+
+# 0.2
+
+```
+
+
+#### 3E6.
+
+Narrowest interval of 66% of posterior probability
+
+```{r}
+rethinking::HPDI(samples, prob = 0.66)
+
+#    |0.66     0.66| 
+# 0.5085085 0.7737738 
+
+samples |> 
+  as_tibble() |> 
+  mutate(v = between(value, 0.5055, 0.77377)) |> 
+  summarise(sum(v) / n())
+
+#   0.663
+
+tidybayes::median_qi(samples, .width = 0.66)
+#          y      ymin      ymax .width .point .interval
+#1 0.6426426 0.5025025 0.7697698   0.66 median        qi
+
+```
+
+#### 3E7.
+
+Need 66% of `p` with equal posterior probability above and below. 
+
+So get .17 on each side? looks like it is the same thing
+
+```{r}
+quantile(samples, c(0.17, 1 - .17))
+#      17%       83% 
+#0.5025025 0.7697698 
+```
+
+## Medium
+
+#### 3M1
+
+8 waters
+15 tosses
+
+```{r}
+p_grid <- seq( from=0, to=1, length.out = 1000)
+prob_p <- rep(1, 1000)
+prob_data <- dbinom(8, size=15, prob = p_grid)
+posterior <- prob_data * prob_p
+posterior <- posterior / sum(posterior)
+
+plot(posterior)
+
+
+```
+
+*Conditioned on having this probability, what is the likelihood that you would see 8 waters in 15 tosses*
+
+#### 3M2.
+
+```{r}
+samples <- sample(p_grid, prob=posterior, size=1e4, replace = TRUE)
+
+plot(samples)
+rethinking::dens(samples)
+
+rethinking::HPDI(samples, 0.9)
+
+#     |0.9      0.9| 
+#0.3293293 0.7167167 
+```
+
+90% of values in the posterior samples are between 33% and 72%
+
+#### 3M3.
+
+Posterior predictive check for this model and data
+
+
+Steps
+1. create the brm model
+2. get the draws from the model
+-- This is just the posterior distirbution, now you need to sample from it
+3. Run the sampled probabilities through the rbinom() function
+-- This takes the sampled probabilities and simulates them
+
+
+```{r}
+b3M3 <-
+  brm(data = list(w = 8), 
+      family = binomial(link = "identity"),
+      w | trials(15) ~ 1,
+      # this is a flat prior
+      prior(beta(1, 1), class = Intercept, lb = 0, ub = 1),
+      seed = 3,
+      control = list(adapt_delta = .999))
+
+plot(b3M3)
+posterior_summary(b3M3)["b_Intercept", ] %>% 
+  round(digits = 2)
+
+f <-
+  fitted(b3M3, summary = F,
+         scale = "linear") %>% 
+  as_tibble() %>% 
+  set_names("p")
+
+glimpse(f)
+
+
+# f contains probabilities of the model? 
+# if you do not include scale = linear, it iwll return what?
+
+f %>% 
+  ggplot(aes(x = p)) +
+  geom_density(fill = "grey50", color = "grey50") +
+  annotate(geom = "text", 
+           x = .08, y = 2.5,
+           label = "Posterior probability") +
+  scale_x_continuous("probability of water",
+                     breaks = c(0, .5, 1),
+                     limits = c(0, 1)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  theme(panel.grid = element_blank())
+
+```
+
+## Simulation
+
+```{r}
+# the simulation
+set.seed(3)
+
+f <-
+  f %>% 
+  mutate(w = rbinom(n(), size = 15,  prob = p))
+
+# the plot
+f %>% 
+  ggplot(aes(x = w)) +
+  geom_histogram(binwidth = 1, center = 0,
+                 color = "grey92", size = 1/10) +
+  scale_x_continuous("number of water samples",
+                     breaks = seq(from = 0, to = 15, by = 3), limits = c(0, 15)) +
+  scale_y_continuous(NULL, breaks = NULL, limits = c(0, 1200)) +
+  ggtitle("Posterior predictive distribution") +
+  theme(panel.grid = element_blank())
+```
+
+```{r}
+p1 <- f %>% 
+  ggplot(aes(x = p)) +
+  geom_density(fill = "grey50", color = "grey50") +
+  annotate(geom = "text", 
+           x = .08, y = 2.5,
+           label = "Posterior probability") +
+  scale_x_continuous("probability of water",
+                     breaks = c(0, .5, 1),
+                     limits = c(0, 1)) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  theme(panel.grid = element_blank())
+
+p2 <- # the plot
+f %>% 
+  ggplot(aes(x = w)) +
+  geom_histogram(binwidth = 1, center = 0,
+                 color = "grey92", size = 1/10) +
+  scale_x_continuous("number of water samples",
+                     breaks = seq(from = 0, to = 15, by = 3), limits = c(0, 15)) +
+  scale_y_continuous(NULL, breaks = NULL, limits = c(0, 1200)) +
+  ggtitle("Posterior predictive distribution") +
+  theme(panel.grid = element_blank())
+```
+
+```{r}
+library(patchwork)
+p1 / p2
+```
+
+```{r}
+f |> summarise(sum(w == 8)/n())
+```
+
+
+#### 3M4.
+
+```{r}
+set.seed(3)
+
+f2 <-
+  f %>% 
+  mutate(w = rbinom(n(), size = 9,  prob = p))
+
+# the plot
+f2 %>% 
+  ggplot(aes(x = w)) +
+  geom_histogram(binwidth = 1, center = 0,
+                 color = "grey92", size = 1/10) +
+  scale_x_continuous("number of water samples",
+                     breaks = seq(from = 0, to = 15, by = 3), limits = c(0, 15)) +
+  scale_y_continuous(NULL, breaks = NULL, limits = c(0, 1200)) +
+  ggtitle("Posterior predictive distribution") +
+  theme(panel.grid = element_blank())
+
+f2 |> 
+ summarise(sum(w == 6)/n())
+
+
+```
+
+
+
+
+#### 3M5.
+
+use a prior that is constant, but 0 for less than 0.5
+
+
+```{r}
+
+
+p_grid <- seq( from=0, to=1, length.out = 1000)
+prob_p <- rep(1, 1000)
+prob_data <- dbinom(8, size=15, prob = p_grid)
+posterior <- prob_data * prob_p
+posterior <- posterior / sum(posterior)
+
+plot(posterior)
+
+samples <- sample(p_grid, prob=posterior, size=1e4, replace = TRUE)
+
+plot(samples)
+rethinking::dens(samples)
+```
+
+```{r}
+
+
+p_grid <- seq( from=0, to=1, length.out = 1000)
+prob_p <- c(rep(0, 500), rep(1, 500))
+prob_data <- dbinom(8, size=15, prob = p_grid)
+posterior <- prob_data * prob_p
+posterior <- posterior / sum(posterior)
+
+plot(posterior)
+
+samples <- sample(p_grid, prob=posterior, size=1e4, replace = TRUE)
+
+plot(samples)
+rethinking::dens(samples)
+```
+
+
+### 3M6.
+
+If we wanted the 99% credible interval to only be a roange of 0.05 wide, we would need approximately 2000 samples with 1400 waters
+
+```{r}
+
+
+p_grid <- seq( from=0, to=1, length.out = 1000)
+prob_p <- c(rep(0, 500), rep(1, 500))
+prob_data <- dbinom(1400, size=2000, prob = p_grid)
+posterior <- prob_data * prob_p
+posterior <- posterior / sum(posterior)
+
+plot(posterior)
+
+samples <- sample(p_grid, prob=posterior, size=1e4, replace = TRUE)
+
+plot(samples)
+rethinking::dens(samples)
+
+rethinking::HPDI(samples, 0.99)
+```
+
+
+# Hard
+
+```{r}
+library(rethinking)
+data(homeworkch3)
+
+all_births <- c(birth1, birth2)
+
+```
+
+
+#### 3H1. 
+
+```{r}
+p_grid <- seq( from=0, to=1, length.out = 1000)
+prob_p <- rep(1, 1000)
+prob_data <- dbinom(111, size=200, prob = p_grid)
+posterior <- prob_data * prob_p
+posterior <- posterior / sum(posterior)
+
+plot(p_grid, posterior)
+p_grid[which.max(posterior)]
+# [1] 0.5545546
+```
+
+0.55455 maximizes the posterior distribuition sampled
+
+
+#### 3H2.
+
+On the samples, we can get the highest posterior density intervals
+
+```{r}
+samples <- sample(p_grid, prob=posterior, size=1e4, replace = TRUE)
+
+plot(samples)
+rethinking::dens(samples)
+
+rethinking::HPDI(samples, 0.99)
+tidybayes::median_qi(samples)
+
+#          y      ymin      ymax .width .point .interval
+#  0.5545546 0.4864615 0.6206206   0.95 median        qi
+
+tidybayes::median_qi(samples, .width = 0.6)
+#          y      ymin      ymax .width .point .interval
+#  0.5545546 0.5255255 0.5835836    0.6 median        qi
+```
+
+
+#### 3H3.
+
+This simulates the data well. What do we get from this process? Before we had a vector of 200 births and 111 boys. Now we have a posterior distribution and a way to simulate. 
+
+The probability of a boy being born is somewhere between 0.48 and 0.62, and we can use these probabilities to sample births and get an estimate of what to expect. For this we did 200 births to check, but we could expand to 10000 birhts. Lets do that. 
+
+```{r}
+rbinom(10000, 200, samples) |> dens()
+```
+
+```{r}
+rbinom(10000, 10000, samples) |> dens()
+```
+
+
+
+
+#### 3H4.
+
+Using the posterior distirbution calculated from all births, it doesn't seem to fit the model too well
+
+```{r}
+samples |> tidybayes::median_qi(.width = .9)
+
+
+x <- rbinom(10000, 100, samples) 
+
+length(x[x == 49]) / length(x)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
