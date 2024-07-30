@@ -1,0 +1,270 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+```{r}
+library(rethinking)
+library(tidyverse)
+data("Howell2")
+
+df <- Howell2 |> 
+  as_tibble()
+
+
+df <- df |> filter(age >= 18)
+
+df %>%
+  ggplot(aes(height, weight)) +
+  geom_point(alpha = 0.5)
+
+
+# H --> W
+
+# W = f(H)
+
+# Scientific Model
+# H --> W <-- U (unobserved)
+# W = f(H, U)
+
+
+# Generative Model
+# W = \beta{H} + U
+
+sim_weight <- function(H, b, sd) {
+  U <- rnorm( length(H), 0, sd )
+  W <- b*H + U
+  return (W)
+}
+
+H <- runif(200, 130, 170)
+W <- sim_weight(H, b=0.5, sd=5)
+plot(W ~ H, col=2, lwd=3)
+
+
+```
+
+$$
+W_i = \beta H + U_i 
+\\
+U_i \sim Normal(0, \sigma)
+\\
+H_i \sim Uniform(130, 170)
+$$
+
+$i$ is the individual observation
+
+$\sim$ is the distributional relationship
+
+---
+
+
+## Estimator
+
+$E(W_i | H_i) = \alpha + \beta H_i$
+
+The average weight is conditional on height
+
+## Posterior distribution
+
+$$
+Pr(\alpha, \beta, \sigma | H_i, W_i) = \frac{Pr(W_i, H_i | \alpha, \beta, \sigma)Pr(\alpha, \beta, \sigma)}{Z}
+$$
+
+Posterior = (garden of forking data * prior) / normalizing constant
+
+
+$$
+W_i \sim Normal(\mu_i, \sigma)
+\\
+\mu_i = \alpha + \beta H_i
+$$
+W is distributed normally with a mean that is a linear function of height H
+
+
+## Quadratic Approx
+
+Approx posterior as a multivariate gaussian distribution
+
+$$
+W_i \sim Normal(\mu_i, \sigma)
+\\
+\mu_i = \alpha + \beta H_i \\
+\alpha \sim Normal(0, 10) \\
+\beta \sim Uniform(0, 1) \\
+\sigma \sim Uniform(0, 10) \\
+$$
+
+```{r}
+m3.1 <- quap(
+  
+  alist(
+    W ~ dnorm(mu, sigma),
+    mu <- a + b*H,
+    a ~ dnorm(0, 10),
+    b ~ dunif(0, 1),
+    sigma ~ dunif(0, 10)
+    
+  ), data = list(W=W, H=H)
+  
+)
+```
+
+## Prior predictive distribution
+
+When H = 0, W = 0 -- (strong constrain, alpha should be close to 0 if model is a good one. If not true model will learn it)
+
+Weight increases (on avg) with height -- (beta is positve, taller people are not lighter on average)
+
+Weight is less than height (in cm) -- (beta is probably less than 1)
+
+sigma must be positive -- (standard deviations are positive)
+
+
+#### Simulate prior
+
+```{r}
+n <- 1e3
+a <- rnorm(n, 0, 10)
+b <- runif(n, 0, 1)
+plot(NULL, xlim=c(130, 170), ylim=c(50, 90), xlab='Height (cm)', ylab='weight (km)')
+for (j in 1:50) abline (a=a[j], b=b[j], lwd=2, col=2)
+```
+
+This is not a great prior lol
+
+There are no bad or good priors, only scientifically justifiable distributions. 
+
+Priors don't do much in simple models like linear regression
+
+
+## Validate
+
+Simulation Based Calibration
+
+
+```{r}
+set.seed(93)
+
+H <- runif(10, 130, 170)
+W <- sim_weight(H, b=0.5, sd=5)
+
+#run model
+m3.1 <- quap(
+  
+  alist(
+    W ~ dnorm(mu, sigma),
+    mu <- a + b*H,
+    a ~ dnorm(0, 10),
+    b ~ dunif(0, 1),
+    sigma ~ dunif(0, 10)
+    
+  ), data = list(W=W, H=H)
+  
+)
+
+#summary of marginal posterior distribution
+precis(m3.1)
+
+```
+
+
+## Analyze Data
+
+```{r}
+
+df2 <- df %>% filter(!is.na(weight), !is.na(height))
+
+m3.2 <- quap(
+  
+  alist(
+    W ~ dnorm(mu, sigma),
+    mu <- a + b*H,
+    a ~ dnorm(0, 10),
+    b ~ dunif(0, 1),
+    sigma ~ dunif(0, 10)
+    
+  ), data = list(W=df2$weight, H = df2$height)
+  
+)
+
+precis(m3.2)
+
+```
+
+
+Nonlinear relationship between height and weight because you can't have negative weight
+
+
+Pairs plot
+- pairs of unkowns against each other
+- diagnol is density
+- upper triangle is posteior dist plotted from above (alpha and beta have negative correlation)
+- lower triangle is 
+
+```{r}
+post <- extract.samples(m3.2)
+
+plot(df2$height, df2$weight, col=2, lwd=3, xlab='height (cm)', ylab='weight (cm)')
+
+for (j in 1:20) abline(a=post$a[j], b=post$b[j], lwd=1)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
