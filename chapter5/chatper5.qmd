@@ -12,8 +12,23 @@ d$A <- standardize(d$MedianAgeMarriage)
 
 ```
 
+## Reasons for multiple regressions
 
-# Standardized Gaussian Model
+### Confounds
+
+A *confound* is something that misleads us. Statistical controls for confounds are important
+
+In the case of this chapter, we will be focused on how "southerness" makes something that does not have any real life relationship, like waffle house density seem important
+
+### Complex causations
+
+There could be multiple causes happening at once.
+
+### Interactions
+
+Inference on one variable is dependent on the other. (e.g. plants depend on water and sunlight. In the absence of either, the other does not benefit at all)
+
+## Standardized Gaussian Model
 
 Since the values are standardized, the intercept should be close to 0. `bA` represents an increase in the standard deviation of age at marriage and its relationship to one standard deviation of divorce rate. Standard deviation because the age at marriage is standardized
 
