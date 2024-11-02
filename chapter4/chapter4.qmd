@@ -1136,6 +1136,462 @@ lines(weight_s, mean_line, col = "red", lwd = 2)
 
 
 
+# BRMS -----------------
+
+
+```{r}
+library(tidyverse)
+library(rethinking)
+data(Howell1)
+d <- Howell1
+rm(Howell1)
+detach(package:rethinking, unload = T)
+library(brms)
+```
+
+
+
+```{r}
+str(d)
+
+d2 <- d |> filter(age >= 18)
+
+
+```
+
+### Prior Predictive Check
+
+```{r}
+n <- 1e4
+
+set.seed(4)
+tibble(sample_mu    = rnorm(n, mean = 178,       sd = 20),
+       sample_sigma = runif(n, min = 0,         max = 50)) %>% 
+  mutate(x          = rnorm(n, mean = sample_mu, sd = sample_sigma)) %>% 
+  
+  ggplot(aes(x = x)) +
+  geom_density(fill = "black", size = 0) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  labs(subtitle = expression(paste("Prior predictive distribution for ", italic(h[i]))),
+       x        = NULL) +
+  theme(panel.grid = element_blank())
+```
+
+### Grid Approx
+
+d_grid contains every combination of mu and sigma across their specified values.
+
+```{r}
+n <- 200
+
+d_grid <-
+  tibble(mu    = seq(from = 140, to = 160, length.out = n),
+         sigma = seq(from = 4,   to = 9,   length.out = n)) %>% 
+  # we'll accomplish with `tidyr::expand()` what McElreath did with base R `expand.grid()`
+  expand(mu, sigma)
+
+head(d_grid)
+```
+
+```{r}
+grid_function <- function(mu, sigma){
+  dnorm(d2$height, mean = mu, sd = sigma, log = T) %>% 
+    sum()
+}
+
+
+d_grid <-
+  d_grid %>% 
+  mutate(log_likelihood = map2(mu, sigma, grid_function)) %>% 
+  unnest() %>% 
+  mutate(prior_mu       = dnorm(mu,    mean = 178, sd  = 20, log = T),
+         prior_sigma    = dunif(sigma, min  = 0,   max = 50, log = T)) %>% 
+  mutate(product        = log_likelihood + prior_mu + prior_sigma) %>% 
+  mutate(probability    = exp(product - max(product)))
+  
+head(d_grid)
+```
+
+```{r}
+d_grid %>% 
+  ggplot(aes(x = mu, y = sigma, z = probability)) + 
+  geom_contour() +
+  labs(x = expression(mu),
+       y = expression(sigma)) +
+  coord_cartesian(xlim = range(d_grid$mu),
+                  ylim = range(d_grid$sigma)) +
+  theme(panel.grid = element_blank())
+```
+
+## Sample from posterior
+
+```{r}
+set.seed(4)
+d_grid_samples <- 
+  d_grid %>% 
+  sample_n(size = 1e4, replace = T, weight = probability)
+
+d_grid_samples %>% 
+  ggplot(aes(x = mu, y = sigma)) + 
+  geom_point(size = .9, alpha = 1/15) +
+  scale_fill_viridis_c() +
+  labs(x = expression(mu[samples]),
+       y = expression(sigma[samples])) +
+  theme(panel.grid = element_blank())
+```
+
+
+
+```{r}
+library(tidybayes)
+
+d_grid_samples %>% 
+  select(mu, sigma) %>% 
+  gather() %>% 
+  group_by(key) %>% 
+  mode_hdi(value)
+```
+
+
+# Model 1
+
+- Going to use half caucy because uniform sigma takes a long time to run in HMC
+
+```{r}
+#. It appears that fitting height on the intercept is similar to saying height
+# is a random value fromthe gaussian distribution
+# Mu is the Intercept in stancode
+
+b4.1 <- 
+  brm(data = d2, family = gaussian,
+      height ~ 1,
+      prior = c(prior(normal(178, 20), class = Intercept),
+                prior(cauchy(0, 1), class = sigma)),
+      iter = 31000, warmup = 30000, chains = 4, cores = 4,
+      seed = 4)
+
+plot(b4.1)
+
+summary(b4.1, prob = 0.89)
+```
+
+
+## Narrow prior
+
+```{r}
+# Sigma increases from ~8 to ~25
+
+b4.2 <- 
+  brm(data = d2, family = gaussian,
+      height ~ 1,
+      prior = c(prior(normal(178, .1), class = Intercept),
+                prior(uniform(0, 50), class = sigma)),
+      iter = 3000, warmup = 2000, chains = 4, cores = 4,
+      seed = 4)
+
+plot(b4.2)
+```
+
+## Sampling from brm() fit
+
+```{r}
+vcov(b4.1)
+
+post <- posterior_samples(b4.1)
+
+head(post)
+
+
+## DEPRECATED - Use as_draws()
+
+post <- as_draws_df(b4.1) |> 
+  as_tibble()
+
+post |> select(b_Intercept:sigma) |> 
+  cov() |> 
+  diag()
+```
+
+#### Custom precis function
+
+```{r}
+t(apply(post[, 1:2], 2, quantile, probs = c(.5, .025, .75)))
+
+# OR
+
+post %>%
+  select(-lp__, -starts_with('.')) %>% 
+  gather(parameter) %>%
+  group_by(parameter) %>%
+  summarise(mean = mean(value),
+            SD   = sd(value),
+            `2.5_percentile`  = quantile(value, probs = .025),
+            `97.5_percentile` = quantile(value, probs = .975)) %>%
+  mutate_if(is.numeric, round, digits = 2)
+
+# OR
+
+
+posterior_summary(b4.1)
+
+# OR (without SD)
+
+post %>% 
+  select(-lp__) %>% 
+  gather(parameter) %>%
+  group_by(parameter) %>%
+  mean_qi(value)
+```
+
+
+# Adding a predictor
+
+```{r}
+ggplot(data = d2, 
+       aes(x = weight, y = height)) +
+  geom_point(shape = 1, size = 2) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+
+## 4.3
+
+```{r}
+b4.3 <- 
+  brm(data = d2, 
+      family = gaussian, # h_i ~ Normal(\mu, \sigma)
+      height ~ 1 + weight, # \mu_i = \alpha + \beta*x_i
+      prior = c(prior(normal(156, 100), class = Intercept), # \alpha ~ Normal(156, 100)
+                prior(normal(0, 10), class = b), # \beta ~ Normal(0, 10)
+                prior(uniform(0, 50), class = sigma)), # \sigma ~ Uniform(0, 50)
+      iter = 41000, warmup = 40000, chains = 4, cores = 4,
+      seed = 4) 
+```
+
+Change unifrom prior to cauchy for faster iteration
+
+```{r}
+b4.3 <- 
+  brm(data = d2, 
+      family = gaussian, # h_i ~ Normal(\mu, \sigma)
+      height ~ 1 + weight, # \mu_i = \alpha + \beta*x_i
+      prior = c(prior(normal(156, 100), class = Intercept), # \alpha ~ Normal(156, 100)
+                prior(normal(0, 10), class = b), # \beta ~ Normal(0, 10)
+                prior(cauchy(0, 1), class = sigma)), 
+      iter = 41000, warmup = 40000, chains = 4, cores = 4,
+      seed = 4) 
+
+plot(b4.3)
+```
+
+```{r}
+posterior_summary(b4.3)[1:3, ]
+```
+
+## Correlation
+
+```{r}
+as_draws_df(b4.3) %>%
+  select(starts_with('b_'), sigma) %>%
+  as_tibble() |> 
+  cor() %>%
+  round(digits = 2)
+```
+
+## Center data to reduce correlation between parameters
+
+```{r}
+
+d2 <- 
+  d2 %>%
+  mutate(weight_c = weight - mean(weight))
+
+b4.4 <- 
+  brm(data = d2, family = gaussian,
+      height ~ 1 + weight_c,
+      prior = c(prior(normal(178, 100), class = Intercept),
+                prior(normal(0, 10), class = b),
+                prior(cauchy(0, 1), class = sigma)),
+      iter = 46000, warmup = 45000, chains = 4, cores = 4,
+      seed = 4)
+
+plot(b4.4)
+
+as_draws_df(b4.4) %>%
+  select(starts_with('b_'), sigma) %>%
+  as_tibble() |> 
+  cor() %>%
+  round(digits = 2)
+
+pairs(b4.4)
+```
+
+## Adding uncertainty around the mean
+
+```{r}
+post <- as_draws(b4.3)
+post |> 
+  as_draws_df() |> 
+  as_tibble()
+```
+
+## Sub link function
+
+```{r}
+mu <- fitted(b4.3, summary = F)
+
+str(mu)
+```
+
+Adding predictor values
+
+```{r}
+weight_seq <- tibble(weight = seq(from = 25, to = 70, by = 1))
+
+mu <-
+  fitted(b4.3,
+         summary = F,
+         newdata = weight_seq) %>%
+  as_tibble() %>%
+  # here we name the columns after the `weight` values from which they were computed
+  set_names(25:70) %>% 
+  mutate(iter = 1:n())
+
+str(mu)
+```
+
+```{r}
+mu <- 
+  mu %>%
+  gather(weight, height, -iter) %>% 
+  # We might reformat `weight` to numerals
+  mutate(weight = as.numeric(weight))
+
+head(mu)
+
+d2 %>%
+  ggplot(aes(x = weight, y = height)) +
+  geom_point(data = mu %>% filter(iter < 101),
+             alpha = .1)
+```
+
+# Regression - NOT PREDICTION INTERVALS 
+
+Just weight and height, just plotting mu
+
+$h_i \sim Normal(\mu_i = \alpha + \beta x, \sigma)$
+
+```{r}
+mu_summary <-
+  fitted(b4.3, 
+         probs = c(0.055, .945),
+         newdata = weight_seq) %>%
+  as_tibble() %>%
+  # let's tack on the `weight` values from `weight_seq`
+  bind_cols(weight_seq)
+
+head(mu_summary)
+
+d2 %>%
+  ggplot(aes(x = weight, y = height)) +
+  geom_smooth(data = mu_summary,
+              aes(y = Estimate, ymin = Q5.5, ymax = Q94.5),
+              stat = "identity",
+              fill = "grey70", color = "black", alpha = 1, size = 1/2) +
+  geom_point(color = "navyblue", shape = 1, size = 1.5, alpha = 2/3) +
+  coord_cartesian(xlim = range(d2$weight)) +
+  theme(text = element_text(family = "Times"),
+        panel.grid = element_blank())
+```
+
+brms::fitted == rethinking::link
+
+AND 
+
+brms::predict == rethinking::sim
+
+# Predict
+
+```{r}
+
+pred_height <-
+  predict(b4.3,
+          probs = c(0.055, .945),
+          newdata = weight_seq) %>%
+  as_tibble() %>%
+  bind_cols(weight_seq)
+  
+pred_height %>%
+  slice(1:6)
+
+```
+
+## Simulated heights
+
+```{r}
+d2 %>%
+  ggplot(aes(x = weight)) +
+  geom_ribbon(data = pred_height, 
+              aes(ymin = Q5.5, ymax = Q94.5),
+              fill = "grey83") +
+  geom_smooth(data = mu_summary,
+              aes(y = Estimate, ymin = Q5.5, ymax = Q94.5),
+              stat = "identity",
+              fill = "grey70", color = "black", alpha = 1, size = 1/2) +
+  geom_point(aes(y = height),
+             color = "navyblue", shape = 1, size = 1.5, alpha = 2/3) +
+  coord_cartesian(xlim = range(d2$weight),
+                  ylim = range(d2$height)) +
+  theme(text = element_text(family = "Times"),
+        panel.grid = element_blank())
+```
+
+
+:) 
+
+# Polynomial Regression
+
+```{r}
+#standardize weight
+d <-
+  d %>%
+  mutate(weight_s = (weight - mean(weight)) / sd(weight))
+```
+
+```{r}
+
+b4.5 <- 
+  brm(data = d, family = gaussian,
+      height ~ 1 + weight_s + I(weight_s^2),
+      prior = c(prior(normal(178, 100), class = Intercept),
+                prior(normal(0, 10), class = b),
+                prior(cauchy(0, 1), class = sigma)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 4)
+
+plot(b4.5)
+print(b4.5)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
