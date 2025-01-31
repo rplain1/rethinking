@@ -196,3 +196,681 @@ We can see that all variables are correlated here:
 ```{r}
 cor(d |> select(ends_with('_s')))
 ```
+
+Controlling for a variable just means, once I know X, do I gain any more info on Y by adding in Z
+
+Questions:
+
+1. Once we know marriage rate, what additional value is there in knowing age at marriage?
+2. Once we know age at marriage, what additional value is there in knowing marriage rate?
+
+## 5.3 Divorce ~ Marriage (rate) + MedianAgeMarriage
+
+
+```{r}
+b5.3 <-
+  brm(
+    data = d, family = gaussian,
+    Divorce_s ~ 1 + Marriage_s + MedianAgeMarriage_s,
+    prior = c(
+      prior(normal(10, 10), class = Intercept),
+      prior(normal(0, 1), class = b),
+      prior(uniform(0, 10), class = sigma)
+    ),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  )
+```
+
+The `Marriage_s` coefficient is close to 0 with probability of it being on either side, while `MedianAgeMarriage_s` is still negative and largely unchanged.
+
+```{r}
+mcmc_plot(b5.3)
+
+```
+
+*Another way of plotting coefficients
+
+```{r}
+# install.packages("bayesplot", dependencies = T)
+library(bayesplot)
+
+post <- as_draws_df(b5.3)
+
+color_scheme_set("red")
+mcmc_intervals(post[, 1:4],
+  prob = .5,
+  point_est = "median"
+) +
+  labs(title = "My fancy bayesplot-based coefficient plot") +
+  theme(
+    axis.text.y = element_text(hjust = 0),
+    axis.line.x = element_line(size = 1 / 4),
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
+
+* a more ggplot oriented approach
+
+```{r}
+library(tidybayes)
+
+post |>
+  select(starts_with('b_'), Intercept, sigma) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(x = value, y = reorder(name, value))) + # note how we used `reorder()` to arrange the coefficients
+  geom_vline(xintercept = 0, color = "firebrick4", alpha = 1 / 10) +
+  stat_pointinterval(point_interval = mode_hdi, .width = .95, linewidth = 3 / 4, color = 'firebrick4') +
+  labs(
+    title = "My tidybayes-based coefficient plot",
+    x = NULL, y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    panel.grid.major.y = element_line(color = alpha("firebrick4", 1 / 4), linetype = 3),
+    axis.text.y = element_text(hjust = 0),
+    axis.ticks.y = element_blank())
+
+```
+
+
+#### What does this tell us?
+
+Once we know median age at marriage, there is little or no additional predictive power from knowing the rate of marriage.
+
+In otherwords, M is predictive but not *causal*.
+
+How did we get here? First we checked the beta coefficient for marriage rate on its own, that was positive. Then we controlled for median age at marriage, and it reduced the coefficent for marriage rate to 0, while median age at marriage was negative.
+
+The question is, do we keep marriage rate in there?
+
+From McElreath, since M is predictive but not causal, it doesn't mean there is no value. If there wasn't data available for A it would still be useful. It still is in the DAG of potential influences on D, but the relationship for D and M is a *spurious association*, caused by A impacting both D and M.
+
+```{r}
+bMarriage_Age <-
+  brm(
+    data = d, family = gaussian,
+    Marriage_s ~ 1 + MedianAgeMarriage_s,
+    prior = c(
+      prior(normal(10, 10), class = Intercept),
+      prior(normal(0, 1), class = b),
+      prior(uniform(0, 10), class = sigma)
+    ),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  )
+
+post <- as_draws_df(bMarriage_Age)
+
+```
+
+## Overthinking
+
+```{r}
+bOverthinking <-
+  brm(
+    data = d, family = gaussian,
+    Marriage_s ~ 1 + MedianAgeMarriage_s,
+    prior = c(
+      prior(normal(10, 10), class = Intercept),
+      prior(normal(0, 1), class = b),
+      prior(uniform(0, 10), class = sigma)
+    ),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  )
+
+
+# define the range of `MedianAgeMarriage_s` values we'd like to feed into `fitted()`
+nd <- generate_new_data("MedianAgeMarriage_s")
+
+# now use `fitted()` to get the model-implied trajectories
+f <-
+  fitted(b5.1, newdata = nd) %>%
+  as_tibble() %>%
+  # tack the `nd` data onto the `fitted()` results
+  bind_cols(nd)
+
+# plot
+ggplot(
+  data = f,
+  aes(x = MedianAgeMarriage_s, y = Estimate)
+) +
+  geom_smooth(aes(ymin = Q2.5, ymax = Q97.5),
+    stat = "identity",
+    fill = "firebrick", color = "firebrick4", alpha = 1 / 5, size = 1 / 4
+  ) +
+  geom_point(
+    data = d,
+    aes(y = Marriage_s),
+    size = 2, color = "firebrick4"
+  ) +
+  ylab("Marriage Rate") +
+  coord_cartesian(
+    xlim = range(d$MedianAgeMarriage_s),
+    ylim = range(d$Divorce_s)
+  ) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+### How to make sense of all of this
+
+#### Plotting
+
+Three generalized techniques to add to the toolkit of interpretive plotting
+
+1. Predictor redidual plots: understand the statistical model
+2. Posterior prediction plots: model-based preds against raw data, not causal tools
+- Shows the error in the model
+3. Counterfactual plots: these show the implied predictions for imaginary scenarios. Thus allowing you to explore causal implicatations of manipulating one or more variables. God mode.
+
+### Predictor residual plots
+
+We regress predictors on each other. In this case, states with positive residuals have high marriage rates for their median age of marriage.
+
+```{r}
+b5.4 <-
+  brm(
+    data = d, family = gaussian,
+    Marriage_s ~ 1 + MedianAgeMarriage_s,
+    prior = c(
+      prior(normal(0, 10), class = Intercept),
+      prior(normal(0, 1), class = b),
+      prior(uniform(0, 10), class = sigma)
+    ),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  )
+```
+
+```{r}
+f <-
+  fitted(b5.4) %>%
+  as_tibble() %>%
+  bind_cols(d)
+
+f %>%
+  ggplot(aes(x = MedianAgeMarriage_s, y = Marriage_s)) +
+  geom_point(size = 2, shape = 1, color = "firebrick4") +
+  geom_segment(aes(xend = MedianAgeMarriage_s, yend = Estimate),
+    size = 1 / 4
+  ) +
+  geom_line(aes(y = Estimate),
+    color = "firebrick4"
+  ) +
+  coord_cartesian(ylim = range(d$Marriage_s)) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+```
+
+### Posterior predictive plots
+
+the model is skeptical of extreme values, so it under-predicts States with high divorce rates and over-predicts States with low divroce rates.
+
+```{r}
+residuals(b5.3) %>%
+  as_tibble() %>%
+  rename(
+    f_ll = Q2.5,
+    f_ul = Q97.5
+  ) %>%
+  bind_cols(
+    predict(b5.3) %>%
+      as_tibble() %>%
+      transmute(
+        p_ll = Q2.5,
+        p_ul = Q97.5
+      ),
+    d
+  ) %>%
+  # here we put our `predict()` intervals into a deviance metric
+  mutate(
+    p_ll = Divorce - p_ll,
+    p_ul = Divorce - p_ul
+  ) %>%
+  # now plot!
+  ggplot(aes(x = reorder(Loc, Estimate), y = Estimate)) +
+  geom_hline(
+    yintercept = 0, size = 1 / 2,
+    color = "firebrick4", alpha = 1 / 10
+  ) +
+  geom_pointrange(aes(ymin = f_ll, ymax = f_ul),
+    size = 2 / 5, shape = 20, color = "firebrick4"
+  ) +
+  geom_segment(
+    aes(
+      y = Estimate - Est.Error,
+      yend = Estimate + Est.Error,
+      x = Loc,
+      xend = Loc
+    ),
+    size = 1, color = "firebrick4"
+  ) +
+  geom_segment(
+    aes(
+      y = p_ll,
+      yend = p_ul,
+      x = Loc,
+      xend = Loc
+    ),
+    size = 3, color = "firebrick4", alpha = 1 / 10
+  ) +
+  labs(x = NULL, y = NULL) +
+  coord_flip(ylim = c(-6, 5)) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_text(hjust = 0)
+  )
+
+```
+
+### Counterfactual Plots
+
+```{r}
+# we need new `nd` data
+nd <-
+  tibble(
+    Marriage_s = seq(from = -3, to = 3, length.out = 30),
+    MedianAgeMarriage_s = mean(d$MedianAgeMarriage_s)
+  )
+
+fitted(b5.3, newdata = nd) %>%
+  as_tibble() %>%
+  # since `fitted()` and `predict()` name their intervals the same way,
+  # we'll need to `rename()` them to keep them straight
+  rename(
+    f_ll = Q2.5,
+    f_ul = Q97.5
+  ) %>%
+  # note how we're just nesting the `predict()` code right inside `bind_cols()`
+  bind_cols(
+    predict(b5.3, newdata = nd) %>%
+      as_tibble() %>%
+      # since we only need the intervals, we'll use `transmute()` rather than `mutate()`
+      transmute(
+        p_ll = Q2.5,
+        p_ul = Q97.5
+      ),
+    # now tack on the `nd` data
+    nd
+  ) %>%
+  # we're finally ready to plot
+  ggplot(aes(x = Marriage_s, y = Estimate)) +
+  geom_ribbon(aes(ymin = p_ll, ymax = p_ul),
+    fill = "firebrick", alpha = 1 / 5
+  ) +
+  geom_smooth(aes(ymin = f_ll, ymax = f_ul),
+    stat = "identity",
+    fill = "firebrick", color = "firebrick4", alpha = 1 / 5, size = 1 / 4
+  ) +
+  coord_cartesian(
+    xlim = range(d$Marriage_s),
+    ylim = c(-3.5, 3.5)
+  ) +
+  labs(
+    subtitle = "Counterfactual plot for which\nMedianAgeMarriage_s = 0",
+    y = "Divorce"
+  ) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+
+```{r}
+# new data
+nd <-
+  tibble(
+    MedianAgeMarriage_s = seq(from = -3, to = 3.5, length.out = 30),
+    Marriage_s = mean(d$Marriage_s)
+  )
+
+# `fitted()` + `predict()`
+fitted(b5.3, newdata = nd) %>%
+  as_tibble() %>%
+  rename(
+    f_ll = Q2.5,
+    f_ul = Q97.5
+  ) %>%
+  bind_cols(
+    predict(b5.3, newdata = nd) %>%
+      as_tibble() %>%
+      transmute(
+        p_ll = Q2.5,
+        p_ul = Q97.5
+      ),
+    nd
+  ) %>%
+  # plot
+  ggplot(aes(x = MedianAgeMarriage_s, y = Estimate)) +
+  geom_ribbon(aes(ymin = p_ll, ymax = p_ul),
+    fill = "firebrick", alpha = 1 / 5
+  ) +
+  geom_smooth(aes(ymin = f_ll, ymax = f_ul),
+    stat = "identity",
+    fill = "firebrick", color = "firebrick4", alpha = 1 / 5, size = 1 / 4
+  ) +
+  coord_cartesian(
+    xlim = range(d$MedianAgeMarriage_s),
+    ylim = c(6, 14)
+  ) +
+  labs(
+    subtitle = "Counterfactual plot for which\nMarriage_s = 0",
+    y = "Divorce"
+  ) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+## Overthnking: Simulating spurious associations
+
+This cretes a relationship between x_spur and y, but only because they are both dependent on x_real. Once you fit into a Multiple Linear Regression, the parameter of x_spur will be close to 0. This is because, once you *control* for x_real, x_spur does not add more value to understanding y.
+
+```{r}
+n <- 100 # number of cases
+
+set.seed(5) # setting the seed makes the results reproducible
+d <-
+  tibble(
+    x_real = rnorm(n), # x_real as Gaussian with mean 0 and SD 1 (i.e., the defaults)
+    x_spur = rnorm(n, x_real), # x_spur as Gaussian with mean = x_real
+    y = rnorm(n, x_real)
+  ) # y as Gaussian with mean = x_real
+
+pairs(d, col = "firebrick4")
+
+```
+
+### Counterfactual plots
+##### Not in BRMS guide
+
+
+```{r}
+library(rethinking)
+## R code 5.19
+data(WaffleDivorce)
+d <- list()
+d$A <- standardize(WaffleDivorce$MedianAgeMarriage)
+d$D <- standardize(WaffleDivorce$Divorce)
+d$M <- standardize(WaffleDivorce$Marriage)
+
+m5.3_A <- quap(
+  alist(
+    ## A -> D <- M
+    D ~ dnorm(mu, sigma),
+    mu <- a + bM * M + bA * A,
+    a ~ dnorm(0, 0.2),
+    bM ~ dnorm(0, 0.5),
+    bA ~ dnorm(0, 0.5),
+    sigma ~ dexp(1),
+    ## A -> M
+    M ~ dnorm(mu_M, sigma_M),
+    mu_M <- aM + bAM * A,
+    aM ~ dnorm(0, 0.2),
+    bAM ~ dnorm(0, 0.5),
+    sigma_M ~ dexp(1)
+  ),
+  data = d
+)
+
+## R code 5.20
+A_seq <- seq(from = -2, to = 2, length.out = 30)
+
+## R code 5.21
+# prep data
+sim_dat <- data.frame(A = A_seq)
+
+# simulate M and then D, using A_seq
+s <- sim(m5.3_A, data = sim_dat, vars = c("M", "D"))
+
+## R code 5.22
+plot(sim_dat$A, colMeans(s$D),
+  ylim = c(-2, 2), type = "l",
+  xlab = "manipulated A", ylab = "counterfactual D"
+)
+shade(apply(s$D, 2, PI), sim_dat$A)
+mtext("Total counterfactual effect of A on D")
+```
+
+
+```{r}
+## R code 5.23
+# new data frame, standardized to mean 26.1 and std dev 1.24
+sim2_dat <- data.frame(A = (c(20, 30) - 26.1) / 1.24)
+s2 <- sim(m5.3_A, data = sim2_dat, vars = c("M", "D"))
+mean(s2$D[, 2] - s2$D[, 1])
+```
+
+
+```{r}
+## R code 5.24
+sim_dat <- data.frame(M = seq(from = -2, to = 2, length.out = 30), A = 0)
+s <- sim(m5.3_A, data = sim_dat, vars = "D")
+
+plot(sim_dat$M, colMeans(s),
+  ylim = c(-2, 2), type = "l",
+  xlab = "manipulated M", ylab = "counterfactual D"
+)
+shade(apply(s, 2, PI), sim_dat$M)
+mtext("Total counterfactual effect of M on D")
+```
+
+## Masked Relationships
+
+```{r}
+library(rethinking)
+library(tidyverse)
+data(milk)
+d <- milk
+d <- as_tibble(d)
+rm(milk)
+detach(package:rethinking, unload = T)
+library(brms)
+```
+
+```{r}
+standardize_waffle_divorce <- function(df) {
+  df |>
+    dplyr::mutate(
+      M = rethinking::standardize(mass),
+      K = rethinking::standardize(kcal.per.g),
+      N = rethinking::standardize(neocortex.perc)
+    ) |>
+    tibble::as_tibble()
+}
+
+
+generate_new_data <- function(col_name) {
+  tibble({{ col_name }} := seq(from = -3, to = 3.5, length.out = 30))
+}
+```
+
+```{r}
+d %>%
+  select(kcal.per.g, mass, neocortex.perc) %>%
+  pairs(col = "firebrick4")
+```
+
+Removing incomplete data, where there is NA values
+
+```{r}
+dcc <-
+  d %>%
+  drop_na(any_of(c("M", "K", "N"))) |>
+dplyr::mutate(
+  M = log(rethinking::standardize(mass)),
+  K = rethinking::standardize(kcal.per.g),
+  N = rethinking::standardize(neocortex.perc)
+)
+
+```
+
+
+# Uniform prior on sigma wouldn't work for stan
+```{r}
+b5.5_prior <-
+  brm(
+    data = dcc, family = gaussian,
+    K ~ 1 + N,
+    prior = c(
+      prior(normal(0, 0.2), class = Intercept),
+      prior(normal(0, 0.5), class = b),
+      prior(cauchy(0, 1), class = sigma)
+    ),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5,
+    sample_prior = "only"
+  )
+```
+
+```{r}
+b5.5 <-
+  brm(
+    data = dcc, family = gaussian,
+    K ~ 1 + N,
+    prior = c(
+      prior(normal(0, 0.2), class = Intercept),
+      prior(normal(0, 0.5), class = b),
+      prior(cauchy(0, 1), class = sigma)
+    ),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  )
+```
+
+#### Prior Plot
+
+This at least just shows us that the lines are *somewhat* reasonable.
+
+```{r}
+nd <- tibble(N = seq(-2, 2, length.out = 30))
+
+fitted(b5.5_prior,
+  newdata = nd,
+  probs = c(.025, .975, .25, .75)
+) %>%
+  as_tibble() %>%
+  bind_cols(nd) |>
+  mutate(rn = row_number()) |>
+  ggplot(aes(N, Estimate)) +
+  geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5),
+    fill = "firebrick", alpha = 1 / 5
+  ) +
+  geom_smooth(aes(ymin = Q25, ymax = Q75),
+    stat = "identity",
+    fill = "firebrick4", color = "firebrick4", alpha = 1 / 5, size = 1 / 2
+  ) +
+  geom_point(
+    data = dcc,
+    aes(y = K),
+    size = 2, color = "firebrick4"
+  ) +
+  coord_cartesian(
+    xlim = range(dcc$N),
+    ylim = range(dcc$K)
+  ) +
+  ylab("kcal.per.g") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+```
+
+#### Posterior Plot
+
+```{r}
+fitted(b5.5,
+  newdata = nd,
+  probs = c(.025, .975, .25, .75)
+) %>%
+  as_tibble() %>%
+  bind_cols(nd) |>
+  mutate(rn = row_number()) |>
+  ggplot(aes(N, Estimate)) +
+  geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5),
+    fill = "firebrick", alpha = 1 / 5
+  ) +
+  geom_smooth(aes(ymin = Q25, ymax = Q75),
+    stat = "identity",
+    fill = "firebrick4", color = "firebrick4", alpha = 1 / 5, size = 1 / 2
+  ) +
+  geom_point(
+    data = dcc,
+    aes(y = K),
+    size = 2, color = "firebrick4"
+  ) +
+  coord_cartesian(
+    xlim = range(dcc$N),
+    ylim = range(dcc$K)
+  ) +
+  ylab("kcal.per.g") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+You have to iterate between using 1 as the sigma value in the priors vs 0.2, and 0.5, but you can see the error bands shrink dramatically in the prior predictive plot and narrow in the posterior distribution
+
+The standard deviation is almost twice the mean for the parameter `N`
+
+```{r}
+print(b5.5, digits = 3)
+```
+
+##### Mass
+
+```{r}
+b5.6 <-
+  brm(
+    data = dcc, family = gaussian,
+    K ~ 1 + M,
+    prior = c(
+      prior(normal(0, 0.2), class = Intercept),
+      prior(normal(0, 0.5), class = b),
+      prior(cauchy(0, 1), class = sigma)
+    ),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  )
+```
+
+
+```{r}
+nd <- tibble(M = seq(from = -2, to = 2, length.out = 30))
+
+fitted(b5.6,
+  newdata = nd,
+  probs = c(.025, .975, .25, .75)
+) %>%
+  as_tibble() %>%
+  bind_cols(nd) |>
+  mutate(rn = row_number()) |>
+  ggplot(aes(M, Estimate)) +
+  geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5),
+    fill = "firebrick", alpha = 1 / 5
+  ) +
+  geom_smooth(aes(ymin = Q25, ymax = Q75),
+    stat = "identity",
+    fill = "firebrick4", color = "firebrick4", alpha = 1 / 5, size = 1 / 2
+  ) +
+  geom_point(
+    data = dcc,
+    aes(y = K),
+    size = 2, color = "firebrick4"
+  ) +
+  coord_cartesian(
+    xlim = range(dcc$M),
+    ylim = range(dcc$K)
+  ) +
+  ylab("kcal.per.g") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+
+```{r}
+print(b5.6, digits = 2)
+```
