@@ -1,0 +1,299 @@
+---
+title: "chapter_5_hw"
+format: html
+---
+
+
+## Easy
+
+2. Equation for *animal diversity is linearly related to latitude, but only after controlling for plant diversity*
+
+$AnimalDiversity_i = \alpha + \beta Latitude + \beta PlantDiversity$
+
+3. 
+$PhdTime_i = \alpha + \beta Funding + \beta SizeOfLab$
+
+If neither of these are good predictors alone, but together they are both positively associated -- each beta coefficient should be greater than 0. 
+
+## Medium
+
+1. Create your own spurious correlation 
+
+In American Football, we have Offenseive EPA, QB Kneels as predictors and Point Differential as our target. All are correlated together. 
+
+QB Kneels appears to predict well, but turns out almost all teams with greater than 0 Point Differentials have 1 or more. Once controlling for Offensive EPA, the coefficient of QB Kneels goes to zero. Once we know the teams Offensive EPA, we no longer gain any info with QB Kneels. QB Kneels are a byproduct of high Offensive EPA. 
+
+```{r}
+N <- 100
+offensive_epa <- rnorm(N)
+qb_kneels <- ifelse(offensive_epa > 0, sample(0:3), 0)
+
+point_differential <- rnorm(N, offensive_epa)
+
+d <- tibble(offensive_epa = offensive_epa, qb_kneels = qb_kneels, point_differential = point_differential)
+
+lm(point_differential ~ qb_kneels, data = d) |> summary() |> broom::tidy()
+
+
+lm(point_differential ~ qb_kneels + offensive_epa, data = d) |> summary() |> broom::tidy()
+
+```
+
+
+2. Create your own masked relationship
+
+This could be something like how touchdowns and turnovers can be correlated with point differential, but only with a positive correlation in touchdowns and a negative correlation with turnovers. 
+
+
+
+```{r}
+N <- 100
+
+X1 <- rnorm(N)
+X2 <- rnorm(N, X1)
+
+Y <- rnorm(N, X1 - X2)
+
+d <- tibble(Y, X1, X2)
+
+cor(d)
+
+lm(Y ~ X1, data = d) |> summary() |> broom::tidy()
+lm(Y ~ X2, data = d) |> summary() |> broom::tidy()
+lm(Y ~ X1 + X2, data = d) |> summary() |> broom::tidy()
+
+
+```
+
+
+3. How could a high divorce rate cause a high marriage rate?
+
+One way could be that if people remarry, and those involved in the second marriage were not also married before themselves, you could increase the total amount of people married. If that showed up in the data, then divorce rate could cause a higher marriage rate due to the overall population having more oppurtunities to marry at least once. 
+
+
+
+4. LDS and divorce
+
+the following is a model that used similar priors to models prior, with the addition of the LDS variable. This looked like it 
+
+```{r}
+library(rethinking)
+data(WaffleDivorce)
+d <- WaffleDivorce
+d$LDS <- c(0.0077, 0.0453, 0.0610, 0.0104, 0.0194, 0.0270, 0.0044, 0.0057, 0.0041, 0.0075, 0.0082, 0.0520, 0.2623, 0.0045, 0.0067, 0.0090, 0.0130, 0.0079, 0.0064, 0.0082, 0.0072, 0.0040, 0.0045, 0.0059, 0.0073, 0.0116, 0.0480, 0.0130, 0.0065, 0.0037, 0.0333, 0.0041, 0.0084, 0.0149, 0.0053, 0.0122, 0.0372, 0.0040, 0.0039, 0.0081, 0.0122, 0.0076, 0.0125, 0.6739, 0.0074, 0.0113, 0.0390, 0.0093, 0.0046, 0.1161)
+
+dl <- d |> 
+  as_tibble() |> 
+  select(Location, MedianAgeMarriage, Population, Marriage, Divorce, LDS, South) |> 
+  mutate(
+    A = standardize(MedianAgeMarriage),
+    M = standardize(Marriage),
+    D = standardize(Divorce),
+    LDS = standardize(log(LDS))
+  )
+
+mod <- brm(
+  D ~ A + M,
+  data = dl, family = gaussian(),
+  prior = c(
+    prior(normal(0, 0.2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  
+)
+
+lds_mod <- brm(
+  D ~ A + M + LDS,
+  data = dl, family = gaussian(),
+  prior = c(
+    prior(normal(0, 0.2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  
+)
+
+mcmc_plot(mod)
+mcmc_plot(lds_mod)
+```
+
+5. Looking at the relationship between gasoline and positive association with lower obesity rates. 
+
+Gasoline prices might have some impact on lower obesity rates, but it doesn't make sense for it to explain a lot of. Examples used in the problem statement were things like less driving, less going out, and less restaurant meals downstream of it. If you were going to make that claim through regression, you would need data like number of nights out eaten, bills related to food, etc. To make the claim, you should start with this needs to be proven through modeling, and a univariate regression should only be used if it has been pruned through several iterations of testing for things like masked and spurious relationships. 
+
+## Hard
+
+1. Divorce data implied conditional independencies, here is the DAG: M --> A --> D
+
+The implied conditional independcy is M --> D
+
+2. Counterfactual to halve the states marriage rate
+
+To do this, we need data to predict on. We set the variable we want to take control of to its set value, in this case $M / 2$. Then we set sequence of data for the rest. We don't train the model again on this data, instead we run predictions at this set value. 
+
+```{r}
+
+nd <-
+  tibble(
+    A = seq(from = -3, to = 3, length.out = 30),
+    M = mean(dl$M / 2)
+  )
+
+nd <- dl |> 
+  #filter(Location == 'Utah') |> 
+  select(Location, M, D) |> 
+  mutate(
+    A = list(seq(-3, 3, length.out = 30)),
+    #M = M / 2
+    ) |> 
+  unnest(cols = A)
+
+
+fitted(mod, newdata = nd) %>%
+  as_tibble() %>%
+  # since `fitted()` and `predict()` name their intervals the same way,
+  # we'll need to `rename()` them to keep them straight
+  rename(
+    f_ll = Q2.5,
+    f_ul = Q97.5
+  ) %>%
+  # note how we're just nesting the `predict()` code right inside `bind_cols()`
+  bind_cols(
+    predict(mod, newdata = nd) %>% # predict gets the WIDE error bands assocaiated with it
+      as_tibble() %>%
+      # since we only need the intervals, we'll use `transmute()` rather than `mutate()`
+      transmute(
+        p_ll = Q2.5,
+        p_ul = Q97.5
+      ),
+    # now tack on the `nd` data
+    nd
+  ) %>%
+  ggplot(aes(x = A, y = Estimate)) +
+  geom_ribbon(aes(ymin = p_ll, ymax = p_ul), # predicition interval
+    fill = "firebrick", alpha = 1 / 5
+  ) +
+  geom_smooth(aes(ymin = f_ll, ymax = f_ul), # fitted interval
+    stat = "identity",
+    fill = "firebrick", color = "firebrick4", alpha = 1 / 5, size = 1 / 4
+  ) +
+  coord_cartesian(
+    xlim = range(-3, 3),
+    ylim = c(-3, 3)
+  ) +
+  labs(
+    subtitle = "Counterfactual plot for which\nMedianAgeMarriage_s = 0",
+    y = "Divorce"
+  ) +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+```
+
+4. Deep South
+
+D; A; M; S;
+
+S -> D
+A -> D
+M -> D
+
+S -> A, thus S -> A -> D
+S -> M, thus S -> M -> D
+
+
+
+```{r}
+south_mod <- brm(
+  D ~ 1 + A + M + South,
+  data = dl, family = gaussian(),
+  prior = c(
+    prior(normal(0, 0.2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  
+)
+```
+
+```{r}
+mcmc_plot(mod)
+mcmc_plot(south_mod)
+```
+
+```{r}
+south_mod_s <- brm(
+  D ~ 1 + South,
+  data = dl, family = gaussian(),
+  prior = c(
+    prior(normal(0, 0.2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  
+)
+
+mcmc_plot(south_mod_s)
+
+south_mod_m <- brm(
+  M ~ 1 + South,
+  data = dl, family = gaussian(),
+  prior = c(
+    prior(normal(0, 0.2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  
+)
+
+mcmc_plot(south_mod_m)
+
+south_mod_a <- brm(
+  A ~ 1 + South,
+  data = dl, family = gaussian(),
+  prior = c(
+    prior(normal(0, 0.2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)),
+    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    seed = 5
+  
+)
+
+mcmc_plot(south_mod_a)
+```
+
+We can test regressing other variables on South and interpret the coefficient. South looks to have a positive association with Age, and a negative association with M. This, along with our mental model of the DAG supports testing a MLR to control for the variable South. The model with all three variables largely reduces M to 0. A has a slightly lower posterior distribution, and South has a positive association with Divorce. There is some explainability if you condition on whether the state is South or not, and then taking in the median age of marriage. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

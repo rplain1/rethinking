@@ -701,9 +701,9 @@ Removing incomplete data, where there is NA values
 ```{r}
 dcc <-
   d %>%
-  drop_na(any_of(c("M", "K", "N"))) |>
+  drop_na(any_of(c("mass", "kcal.per.g", "neocortex.perc"))) |>
 dplyr::mutate(
-  M = log(rethinking::standardize(mass)),
+  M = rethinking::standardize(log(mass)),
   K = rethinking::standardize(kcal.per.g),
   N = rethinking::standardize(neocortex.perc)
 )
@@ -874,3 +874,213 @@ fitted(b5.6,
 ```{r}
 print(b5.6, digits = 2)
 ```
+
+### MLR
+
+```{r}
+b5.7 <- 
+  brm(data = dcc, family = gaussian,
+      K ~ 1 + N + M,
+      prior = c(prior(normal(0, 0.2), class = Intercept),
+                prior(normal(0, 0.5), class = b),
+                prior(exponential(1), class = sigma)),
+      iter = 4000, warmup = 2000, chains = 4, cores = 4,
+      control = list(adapt_delta = 0.999),
+      seed = 5)
+```
+
+```{r}
+print(b5.7, digits = 2)
+
+b5.7$fit$b_Intercept
+
+post <- as_draws_df(b5.7)
+
+```
+
+Adding both parameters made the coefficients move further away from 0 than when they were in the model alone
+
+
+
+#### Conterfactual mass = 0
+
+```{r}
+nd <- 
+  tibble(N = seq(-2, 2, length.out = 30),
+         M       = mean(dcc$M))
+
+b5.7 %>%
+  fitted(newdata = nd, 
+         probs = c(.025, .975, .25, .75)) %>%
+  as_tibble() %>%
+  bind_cols(nd) %>% 
+
+  ggplot(aes(x = N, y = Estimate)) +
+  geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5),
+              fill = "firebrick", alpha = 1/5) +
+  geom_smooth(aes(ymin = Q25, ymax = Q75),
+              stat = "identity",
+              fill = "firebrick4", color = "firebrick4", alpha = 1/5, size = 1/2) +
+  geom_point(data = dcc, 
+             aes(y = K),
+             size = 2, color = "firebrick4") +
+  coord_cartesian(xlim = range(dcc$N), 
+                  ylim = range(dcc$K)) +
+  ylab("kcal.per.g") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+```{r}
+nd <- 
+  tibble(M = seq(from = -2, to = 2, length.out = 30),
+         N = mean(dcc$N))
+
+b5.7 %>%
+  fitted(newdata = nd,
+         probs = c(.025, .975, .25, .75)) %>%
+  as_tibble() %>%
+  bind_cols(nd) %>% 
+
+  ggplot(aes(x = M, y = Estimate)) +
+  geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5),
+              fill = "firebrick", alpha = 1/5) +
+  geom_smooth(aes(ymin = Q25, ymax = Q75),
+              stat = "identity",
+              fill = "firebrick4", color = "firebrick4", alpha = 1/5, size = 1/2) +
+  geom_point(data = dcc, 
+             aes(y = K),
+             size = 2, color = "firebrick4") +
+  coord_cartesian(xlim = range(dcc$M), 
+                  ylim = range(dcc$K)) +
+  ylab("kcal.per.g") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+
+The counter factual plots show stronger associations, as in Figure 5.9. 
+I guess this is saying the association for the variable is strong, values away from the mean of the other variable affects `K` 
+
+
+## Categorical variables
+
+```{r}
+library(rethinking)
+data(Howell1)
+d <- Howell1
+rm(Howell1)
+detach(package:rethinking, unload = T)
+library(brms)
+library(tidyverse)
+```
+
+
+
+```{r}
+d %>%
+  glimpse()
+```
+
+### Indicator variable
+
+```{r}
+bIndicator <- 
+ brm(data = d, family = gaussian,
+      height ~ 1 + male,
+      prior = c(prior(normal(178, 100), class = Intercept),
+                prior(normal(0, 10), class = b),
+                prior(cauchy(0, 2), class = sigma)),
+      iter = 2000, warmup = 500, chains = 4, cores = 4,
+      seed = 5)
+
+print(bIndicator, digits = 2)
+```
+
+### Index variables
+
+The difference is to treat them as an index, instead of creating dummy variables for each one
+
+```{r}
+library(rethinking)
+data(milk)
+d <- milk
+
+rm(milk)
+detach(package:rethinking, unload = T)
+library(brms)
+```
+
+4 categories
+
+```{r}
+d %>%
+  distinct(clade)
+
+d$clade_id <- as.integer(d$clade)
+```
+
+
+```{r}
+bIndex <- 
+  brm(data = d, family = gaussian,
+      kcal.per.g ~ 0 + clade,
+      prior = c(prior(normal(.6, 10), class = b),
+                prior(uniform(0, 10), class = sigma)),
+      iter = 2000, warmup = 500, chains = 4, cores = 4,
+      seed = 5)
+
+print(bIndex, digits = 2)
+
+brms::mcmc_plot(bIndex, variable = "^b_", regex = TRUE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
