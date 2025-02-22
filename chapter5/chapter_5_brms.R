@@ -32,14 +32,19 @@ plot_fitted_data <- function(x = NULL, y = NULL) {
     data = f,
     aes(x = x, y = y)
   ) +
-    geom_smooth(aes(ymin = Q2.5, ymax = Q97.5),
+    geom_smooth(
+      aes(ymin = Q2.5, ymax = Q97.5),
       stat = "identity",
-      fill = "firebrick", color = "firebrick4", alpha = 1 / 5, size = 1 / 4
+      fill = "firebrick",
+      color = "firebrick4",
+      alpha = 1 / 5,
+      size = 1 / 4
     ) +
     geom_point(
       data = d,
       aes(y = Divorce),
-      size = 2, color = "firebrick4"
+      size = 2,
+      color = "firebrick4"
     ) +
     ylab("Divorce") +
     coord_cartesian(
@@ -48,21 +53,24 @@ plot_fitted_data <- function(x = NULL, y = NULL) {
     ) +
     theme_bw() +
     theme(panel.grid = element_blank())
-
 }
 
 d <- standardize_waffle_divorce(d)
 
 b5.1 <-
   brm(
-    data = d, family = gaussian,
+    data = d,
+    family = gaussian,
     Divorce_s ~ 1 + MedianAgeMarriage_s,
     prior = c(
       prior(normal(10, 10), class = Intercept),
       prior(normal(0, 1), class = b),
       prior(uniform(0, 10), class = sigma)
     ),
-    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    iter = 2000,
+    warmup = 500,
+    chains = 4,
+    cores = 4,
     seed = 5
   )
 
@@ -82,14 +90,19 @@ ggplot(
   data = f,
   aes(x = MedianAgeMarriage_s, y = Estimate)
 ) +
-  geom_smooth(aes(ymin = Q2.5, ymax = Q97.5),
+  geom_smooth(
+    aes(ymin = Q2.5, ymax = Q97.5),
     stat = "identity",
-    fill = "firebrick", color = "firebrick4", alpha = 1 / 5, size = 1 / 4
+    fill = "firebrick",
+    color = "firebrick4",
+    alpha = 1 / 5,
+    size = 1 / 4
   ) +
   geom_point(
     data = d,
     aes(y = Divorce_s),
-    size = 2, color = "firebrick4"
+    size = 2,
+    color = "firebrick4"
   ) +
   ylab("Divorce") +
   coord_cartesian(
@@ -100,20 +113,22 @@ ggplot(
   theme(panel.grid = element_blank())
 
 
-
-
 ## b5.2 prior predictive
 
 b5.2 <-
   brm(
-    data = d, family = gaussian,
+    data = d,
+    family = gaussian,
     Divorce_s ~ 1 + Marriage_s,
     prior = c(
       prior(normal(0, 0.2), class = Intercept),
       prior(normal(0, 0.5), class = b),
       prior(exponential(1), class = sigma)
     ),
-    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    iter = 2000,
+    warmup = 500,
+    chains = 4,
+    cores = 4,
     seed = 5,
     sample_prior = "only"
   )
@@ -129,14 +144,19 @@ ggplot(
   data = f,
   aes(x = Marriage_s, y = Estimate)
 ) +
-  geom_smooth(aes(ymin = Q2.5, ymax = Q97.5),
+  geom_smooth(
+    aes(ymin = Q2.5, ymax = Q97.5),
     stat = "identity",
-    fill = "firebrick", color = "firebrick4", alpha = 1 / 5, size = 1 / 4
+    fill = "firebrick",
+    color = "firebrick4",
+    alpha = 1 / 5,
+    size = 1 / 4
   ) +
   geom_point(
     data = d,
     aes(y = Divorce_s),
-    size = 2, color = "firebrick4"
+    size = 2,
+    color = "firebrick4"
   ) +
   coord_cartesian(
     xlim = range(d$Marriage_s),
@@ -147,19 +167,22 @@ ggplot(
   theme(panel.grid = element_blank())
 
 
-
 ## b5.2
 
 b5.2 <-
   brm(
-    data = d, family = gaussian,
+    data = d,
+    family = gaussian,
     Divorce_s ~ 1 + Marriage_s,
     prior = c(
       prior(normal(0, 0.2), class = Intercept),
       prior(normal(0, 0.5), class = b),
       prior(exponential(1), class = sigma)
     ),
-    iter = 2000, warmup = 500, chains = 4, cores = 4,
+    iter = 2000,
+    warmup = 500,
+    chains = 4,
+    cores = 4,
     seed = 5
   )
 
@@ -174,14 +197,19 @@ ggplot(
   data = f,
   aes(x = Marriage_s, y = Estimate)
 ) +
-  geom_smooth(aes(ymin = Q2.5, ymax = Q97.5),
+  geom_smooth(
+    aes(ymin = Q2.5, ymax = Q97.5),
     stat = "identity",
-    fill = "firebrick", color = "firebrick4", alpha = 1 / 5, size = 1 / 4
+    fill = "firebrick",
+    color = "firebrick4",
+    alpha = 1 / 5,
+    size = 1 / 4
   ) +
   geom_point(
     data = d,
     aes(y = Divorce_s),
-    size = 2, color = "firebrick4"
+    size = 2,
+    color = "firebrick4"
   ) +
   coord_cartesian(
     xlim = range(d$Marriage_s),

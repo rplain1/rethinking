@@ -1,0 +1,77 @@
+---
+title: "chapter_6_brms"
+format: html
+---
+
+
+```{r}
+library(tidyverse)
+library(brms)
+library(bayesplot)
+
+```
+
+## Multicollinearity
+
+### Legs
+
+```{r}
+n <- 100
+set.seed(909)
+
+d <-
+  tibble(
+    height = rnorm(n, mean = 10, sd = 2),
+    leg_prop = runif(n, min = 0.4, max = 0.5)
+  ) %>%
+    mutate(
+    leg_left = leg_prop * height + rnorm(n, mean = 0, sd = 0.02),
+    leg_right = leg_prop * height + rnorm(n, mean = 0, sd = 0.02)
+  )
+```
+
+
+
+```{r}
+b6.1 <-
+  brm(
+    data = d,
+    family = gaussian,
+    height ~ 1 + leg_left + leg_right,
+    prior = c(
+      prior(normal(10, 100), class = Intercept),
+      prior(normal(2, 10), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 6,
+    file = "fits/b06.01"
+  )
+```
+
+
+
+```{r}
+print(b6.1)
+
+
+mcmc_plot(
+  b6.1,
+  type = "intervals",
+  prob = .5,
+  prob_outer = .95,
+  point_est = "mean"
+) +
+  labs(
+    title = "The coefficient plot for the two-leg model",
+    subtitle = "Holy smokes; look at the widths of those betas!"
+  ) +
+  theme(
+    axis.text.y = element_text(hjust = 0),
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(hjust = 0)
+  )
+```

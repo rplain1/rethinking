@@ -1040,10 +1040,61 @@ brms::mcmc_plot(bIndex, variable = "^b_", regex = TRUE)
 
 
 
+---
+
+## Wow, was using the wrong edition of BRMS guide
+
+```{r}
+library(tidyverse)
+
+data(WaffleDivorce, package = "rethinking")
+d <- WaffleDivorce
+
+d <-
+  d %>% 
+  mutate(d = rethinking::standardize(Divorce),
+         m = rethinking::standardize(Marriage),
+         a = rethinking::standardize(MedianAgeMarriage))
+
+head(d)
+glimpse(d)
+```
 
 
+```{r}
+library(brms)
+b5.1 <- 
+  brm(data = d, 
+      family = gaussian(),
+      d ~ 1 + a,
+      prior = c(prior(normal(0, 0.2), class = Intercept),
+                prior(normal(0, 0.5), class = b),
+                prior(exponential(1), class = sigma)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 5,
+      sample_prior = T,
+      backend = 'cmdstanr'
+      )
+```
 
+```{r}
+prior <- prior_draws(b5.1)
 
+prior %>% glimpse()
+```
+
+```{r}
+b5.3 <- 
+  brm(data = d, 
+      family = gaussian,
+      d ~ 1 + m + a,
+      prior = c(prior(normal(0, 0.2), class = Intercept),
+                prior(normal(0, 0.5), class = b),
+                prior(exponential(1), class = sigma)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4,
+      seed = 5,
+      file = "fits/b05.03")
+```
 
 
 

@@ -100,7 +100,7 @@ mod <- brm(
     prior(normal(0, 0.5), class = b),
     prior(exponential(1), class = sigma)),
     iter = 2000, warmup = 500, chains = 4, cores = 4,
-    seed = 5
+    seed = 5, backend = "cmdstanr"
   
 )
 
