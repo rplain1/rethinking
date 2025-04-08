@@ -1,0 +1,983 @@
+
+```{r}
+library(brms)
+library(tidyverse)
+```
+
+
+```{r}
+data(cars)
+
+b7.m <-
+  brm(
+    data = cars,
+    family = gaussian,
+    dist ~ 1 + speed,
+    prior = c(
+      prior(normal(0, 100), class = Intercept),
+      prior(normal(0, 10), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 7,
+    backend = 'cmdstanr',
+    file = "fits/b07.0m"
+  )
+```
+
+
+```{r}
+print(b7.m)
+```
+
+
+
+We have 4000 draws for the posterior distribution. The following will create a 4000 x 50 matrix with each draw maps a log likelihood for each row?
+
+```{r}
+n_cases <- nrow(cars)
+
+ll <-
+  log_lik(b7.m) %>%
+  data.frame() %>%
+  set_names(c(str_c(0, 1:9), 10:n_cases))
+
+dim(ll)
+```
+
+## LLPD
+This will take every row and create 4000 likelihoods that the row came from the posterior distribution (?)
+
+```{r}
+log_mu_l <-
+  ll %>%
+  pivot_longer(everything(), names_to = "i", values_to = "loglikelihood") %>%
+  mutate(likelihood = exp(loglikelihood)) %>%
+  group_by(i) %>%
+  summarise(log_mean_likelihood = mean(likelihood) %>% log())
+
+(lppd <-
+  log_mu_l %>%
+  summarise(lppd = sum(log_mean_likelihood)) %>%
+  pull(lppd))
+```
+
+## pWAIC
+
+Same thing but for variance instead of likelihood
+
+```{r}
+v_i <-
+  ll %>%
+  pivot_longer(everything(), names_to = "i", values_to = "loglikelihood") %>%
+  group_by(i) %>%
+  summarise(var_loglikelihood = var(loglikelihood))
+
+pwaic <-
+  v_i %>%
+  summarise(pwaic = sum(var_loglikelihood)) %>%
+  pull()
+
+pwaic
+```
+
+## WAIC
+
+```{r}
+-2 * (lppd - pwaic)
+waic(b7.m)
+```
+
+## Comparing CV, PSIS, and WAIC
+
+
+```{r}
+make_sim <- function(n, k, b_sigma) {
+  r <- rethinking::mcreplicate(
+    n = n_sim,
+    expr = rethinking::sim_train_test(
+      N = n,
+      k = k,
+      b_sigma = b_sigma,
+      WAIC = T,
+      LOOCV = T,
+      LOOIC = T
+    ),
+    mc.cores = n_cores
+  )
+
+  t <-
+    tibble(
+      deviance_os = mean(unlist(r[2, ])),
+      deviance_w = mean(unlist(r[3, ])),
+      deviance_p = mean(unlist(r[11, ])),
+      deviance_c = mean(unlist(r[19, ])),
+      error_w = mean(unlist(r[7, ])),
+      error_p = mean(unlist(r[15, ])),
+      error_c = mean(unlist(r[20, ]))
+    )
+
+  return(t)
+}
+```
+
+
+```{r}
+n_sim <- 10
+n_cores <- 8
+
+s <-
+  crossing(n = c(20, 100), k = 1:2, b_sigma = c(0.5, 100)) %>%
+  mutate(sim = pmap(list(n, k, b_sigma), make_sim)) %>%
+  unnest(sim)
+```
+
+# Model Comparison
+
+## Model mis-selection
+
+Models from the previous fungus example
+
+```{r}
+b6.6 <- readRDS("fits/b06.06.rds") # just intercept
+b6.7 <- readRDS("fits/b06.07.rds") # treatment and fungus
+b6.8 <- readRDS("fits/b06.08.rds") # treatment (causal valid model)
+```
+
+
+```{r}
+waic(b6.7)
+```
+
+
+```{r}
+b6.7 <- add_criterion(b6.7, criterion = "waic")
+b6.7$criteria$waic
+```
+
+
+```{r}
+# compute and save the WAIC information for the next three models
+b6.6 <- add_criterion(b6.6, criterion = "waic")
+b6.8 <- add_criterion(b6.8, criterion = "waic")
+
+# compare the WAIC estimates
+w <- loo_compare(b6.6, b6.7, b6.8, criterion = "waic")
+
+print(w)
+print(w, simplify = F)
+```
+
+
+```{r}
+b6.6 <- add_criterion(b6.6, criterion = "loo")
+b6.7 <- add_criterion(b6.7, criterion = "loo")
+b6.8 <- add_criterion(b6.8, criterion = "loo")
+
+# compare the WAIC estimates
+loo_compare(b6.6, b6.7, b6.8, criterion = "loo") %>%
+  print(simplify = F)
+```
+
+## Outliers and other illusions
+
+Guess who is back, waffle's back
+
+```{r}
+data(WaffleDivorce, package = "rethinking")
+
+d <-
+  WaffleDivorce %>%
+  mutate(
+    d = rethinking::standardize(Divorce),
+    m = rethinking::standardize(Marriage),
+    a = rethinking::standardize(MedianAgeMarriage)
+  )
+
+rm(WaffleDivorce)
+```
+
+
+```{r}
+b5.1 <-
+  brm(
+    data = d,
+    family = gaussian,
+    d ~ 1 + a,
+    prior = c(
+      prior(normal(0, 0.2), class = Intercept),
+      prior(normal(0, 0.5), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 5,
+    sample_prior = T,
+    file = "fits/b05.01",
+    backend = 'cmdstanr'
+  )
+
+b5.2 <-
+  brm(
+    data = d,
+    family = gaussian,
+    d ~ 1 + m,
+    prior = c(
+      prior(normal(0, 0.2), class = Intercept),
+      prior(normal(0, 0.5), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 5,
+    file = "fits/b05.02",
+    backend = 'cmdstanr'
+  )
+
+b5.3 <-
+  brm(
+    data = d,
+    family = gaussian,
+    d ~ 1 + m + a,
+    prior = c(
+      prior(normal(0, 0.2), class = Intercept),
+      prior(normal(0, 0.5), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 5,
+    file = "fits/b05.03",
+    backend = 'cmdstanr'
+  )
+```
+
+
+```{r}
+b5.1 <- add_criterion(b5.1, criterion = "loo")
+b5.2 <- add_criterion(b5.2, criterion = "loo")
+b5.3 <- add_criterion(b5.3, criterion = "loo")
+```
+
+
+```{r}
+loo_compare(b5.1, b5.2, b5.3, criterion = "loo") %>%
+  print(simplify = F)
+```
+
+
+```{r}
+loo(b5.3)
+```
+
+
+```{r}
+library(loo)
+
+loo::loo(b5.3) %>%
+  loo::pareto_k_ids(threshold = 0.5)
+```
+
+
+```{r}
+b5.3 <- add_criterion(b5.3, "waic", file = "fits/b05.03")
+```
+
+
+```{r}
+tibble(
+  pareto_k = b5.3$criteria$loo$diagnostics$pareto_k,
+  p_waic = b5.3$criteria$waic$pointwise[, "p_waic"],
+  Loc = pull(d, Loc)
+) %>%
+
+  ggplot(aes(x = pareto_k, y = p_waic, color = Loc == "ID")) +
+  geom_vline(xintercept = .5, linetype = 2, color = "black", alpha = 1 / 2) +
+  geom_point(aes(shape = Loc == "ID")) +
+  geom_text(
+    data = . %>% filter(p_waic > 0.5),
+    aes(x = pareto_k - 0.03, label = Loc),
+    hjust = 1
+  ) +
+  #scale_color_manual(values = carto_pal(7, "BurgYl")[c(5, 7)]) +
+  scale_shape_manual(values = c(1, 19)) +
+  labs(subtitle = "Gaussian model (b5.3)") +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+b5.3t <-
+  brm(
+    data = d,
+    family = student,
+    bf(d ~ 1 + m + a, nu = 2),
+    prior = c(
+      prior(normal(0, 0.2), class = Intercept),
+      prior(normal(0, 0.5), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 5,
+    file = "fits/b05.03t"
+  )
+```
+
+
+```{r}
+print(b5.3t)
+```
+
+
+```{r}
+b5.3t <- add_criterion(b5.3t, criterion = c("loo", "waic"))
+```
+
+
+```{r}
+tibble(pareto_k = b5.3t$criteria$loo$diagnostics$pareto_k,
+       p_waic   = b5.3t$criteria$waic$pointwise[, "p_waic"],
+       Loc      = pull(d, Loc)) %>%
+
+  ggplot(aes(x = pareto_k, y = p_waic, color = Loc == "ID")) +
+  geom_point(aes(shape = Loc == "ID")) +
+  geom_text(data = . %>% filter(Loc %in% c("ID", "ME")),
+            aes(x = pareto_k - 0.005, label = Loc),
+            hjust = 1) +
+  scale_shape_manual(values = c(1, 19)) +
+  labs(subtitle = "Student-t model (b5.3t)") +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+loo_compare(b5.3, b5.3t, criterion = "waic") %>% print(simplify = F)
+loo_compare(b5.3, b5.3t, criterion = "loo") %>% print(simplify = F)
+```
+
+Student t is probably better for most of my modeling situations than cauchy or normal.
+
+
+```{r}
+rcauchy(1e4) |> summary()
+#>      Min.   1st Qu.    Median      Mean   3rd Qu.      Max.
+#> -51759.76     -1.01      0.02     -4.97      1.03   7725.08
+brms::rstudent_t(1e4, 2) |> summary()
+#>      Min.   1st Qu.    Median      Mean   3rd Qu.      Max.
+#> -64.68022  -0.82825   0.00615  -0.01279   0.84031  52.15127
+
+
+```
+
+
+# Practice
+
+## Easy
+
+### 1. The three motivating criteria for information entropy
+
+- The measure of uncertainty should be continuous
+- the measure of uncertainty should increase as the number of possible events increases
+- the measure should be additive
+
+In my own words
+- Probabilty is on a continuous scale. The ability to make a small change in the probability of the event that is proportionate to the uncertainty.
+- Uncertainty propogates, as you combine uncertainty with multiple events, the overall uncertainty becomes greater.
+- Uncertainty of different events should be able to add together to increase uncertainty.
+
+how much information we derive from observing the outcome
+
+### 2. Entropy of coin that comes up heads 70% of the time
+
+
+```{r}
+coin <- c(0.7, 0.3) |> setNames(c('heads', 'tails'))
+
+-sum(coin * log(coin))
+
+```
+
+table of entropy
+
+```{r}
+tibble(
+  rn = 1:99,
+  x1 = seq(0.01, 0.99, 0.01),
+  x2 = seq(0.99, 0.01, -0.01)
+) |>
+    group_by(rn) |>
+    summarise(entropy = -sum((x1*log(x1)), (x2*log(x2)))) |>
+    ggplot(aes(rn, entropy)) +
+    geom_point()
+
+```
+
+This makes a perfect arc where it maxes out at row 50, where `x1, x2 = 0.5`. It is the most uncertain of the scenarios and therefore has the highest entropy value.
+
+
+```{r}
+# Set the number of rows and columns
+n_rows <- 100
+n_cols <- 10
+
+# Generate random values between 0 and 1 for each element
+random_data <- matrix(runif(n_rows * n_cols), nrow = n_rows)
+
+# Normalize each column to sum to 1
+normalized_data <- apply(random_data, 2, function(x) x / sum(x))
+
+# Create a tibble from the normalized data
+prob_tibble <- as_tibble(normalized_data)
+
+# View the first few rows of the tibble
+head(prob_tibble)
+
+d <- prob_tibble |>
+  mutate(rn = row_number()) |>
+  pivot_longer(-rn) |>
+  group_by(rn) |>
+  summarise(
+    entropy = -sum(value*log(value)),
+    across(value, list(mean=mean, sd = sd, min=min, max=max))
+  )
+
+d |>
+    arrange(value_mean) |>
+    mutate(rn = row_number()) |>
+    ggplot(aes(rn, entropy)) +
+    geom_point()
+
+
+```
+
+there is an association where the higher the mean value of the probabilities, the higher the entropy. As one of the events becomes more or less certain, the infromation entropy calculation decreases.
+
+### 3. 4 side die
+
+The entropy is 1.376
+
+This is higher than that of 0.6 calculated for the 0.7 and 0.3 occurance
+
+```{r}
+die <- c(0.2, 0.25, 0.25, 0.3) |> setNames(1:4)
+sum(die)
+-sum(die * log(die))
+```
+
+### 4. Entropy of die that never shows 4
+
+Entropy can't be calculated, because the `log(0) = -Inf`. Entropy necessatates having probabilities (0, 1) exclusive. The log property is used to create negative values that are numerically stable to use.
+
+```{r}
+die <- c(1 / 3, 1 / 3, 1 / 3, 0) |> setNames(1:4)
+sum(die)
+-sum(die * log(die))
+
+#> [1] -Inf
+```
+
+## Medium
+
+### 1. AIC and WAIC
+
+AIC
+- tells the models overfitting tendency
+- using KL divergence to minimize
+- the bias is proportional to the number of parameters
+- relies on assumptions like:
+    - flat priors
+    - posterior is gaussian
+    - sample size N is greater than number of parameters
+
+WAIC
+- makes no assumptions about shape of posterior
+- apporximation of out of sample deviance
+- it is trying to guess the out-of-sample KL divergence
+- compute the variance in log-propbabilities for each observation, and then sum up the variances to get the total penalty
+- pointwise, prediction is considered case-by-case
+
+### 2. Model selection vs model comparison
+Model selection is using a criteria to select the model. A bad example is using {stargazing} to select the model based on p-values within the parameters. Model comparison is much different, where you do use scores and estimates to judge models, but you factor in other contexts such as complexity, overall goal of the model, cost readibilitiy, confounders, etc.
+
+Model comparison needs an analyst.
+
+### 3. Comparing models across the same observations
+
+This is to level the playing field and control for as much as we can when selecting the model. WAIC and `loo` estimate which observations would contian the most deviance, so that cross-validation does not need to be analyzed on every row when little information is gained. Having a different sample could change which of these observations are included. If data that are considered more of outliers in one vs the other, it would influence and report a worse criteria - even if that model would have performed better.
+
+### 4. WAIC as prior becomes more concentrated
+
+As the priors become more concentrated, pWAIC will lower as the as smaller variances are introduced. This is a restriction of the plausible range of paramters. The penalty term becomes smaller
+
+```{r}
+data(WaffleDivorce, package = "rethinking")
+
+d <-
+  WaffleDivorce %>%
+  mutate(
+    d = rethinking::standardize(Divorce),
+    m = rethinking::standardize(Marriage),
+    a = rethinking::standardize(MedianAgeMarriage)
+  )
+
+rm(WaffleDivorce)
+# n <- 100
+# x <- rnorm(n, 2, 2)
+# z <- rnorm(n, 2, 2)
+# y <- x - z + rnorm(n, sd = 0.25)
+
+# d <- tibble(x = x, z = z, y = y)
+
+p4.1 <- brm(
+  d ~ 1 + m + a,
+  data = d,
+  prior = NULL,
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr'
+)
+
+p4.2 <- brm(
+  d ~ 1 + m + a,
+  data = d,
+  prior = c(
+    prior(normal(0, 3), class = Intercept),
+    prior(normal(0, 3), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr'
+)
+
+p4.3 <- brm(
+  d ~ 1 + m + a,
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr'
+)
+
+p4.4 <- brm(
+  d ~ 1 + m + a,
+  data = d,
+  prior = c(
+    prior(normal(0, 0.25), class = Intercept),
+    prior(normal(0, 0.25), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr'
+)
+```
+
+
+```{r}
+loo1 <- loo(p4.1)
+loo2 <- loo(p4.2)
+loo3 <- loo(p4.3)
+loo4 <- loo(p4.4)
+
+loo_compare(loo1, loo2, loo3, loo4)
+```
+
+### 5. Overfitting and priors
+
+By tightening priors, we are retaining bias in the model (which is a good thing!). This prevents from  overfitting and to have skeptiscm remain that the observed values are the true values.
+
+### 5. Overly informative priors
+
+It might not allow for extreme or unknown events to occur. The model also will not move if the prior is too constrictive, and thus try and compensate by pulling the lever on other priors.
+
+## Hard
+
+### 1. Laffer curve
+
+Tax rates and tax revenue
+
+```{r}
+data(Laffer, package = "rethinking")
+
+d <-
+  Laffer %>%
+  mutate(
+    rate = rethinking::standardize(tax_rate),
+    rev = rethinking::standardize(tax_revenue)
+  ) |>
+    as_tibble()
+
+rm(Laffer)
+```
+
+
+```{r}
+ph1.1 <- brm(
+  rev ~ rate,
+  data = d,
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr'
+)
+
+ph1.2 <- brm(
+  rev ~ rate,
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr'
+)
+
+ph1.3 <- brm(
+  rev ~ 1 + I(rate) + I(rate^2),
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr'
+)
+
+ph1.4 <- brm(
+  rev ~ 1 + s(rate),
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr'
+)
+```
+
+
+```{r}
+ph1.1 <- add_criterion(ph1.1, criterion = "loo")
+ph1.1 <- add_criterion(ph1.1, criterion = "waic")
+
+ph1.2 <- add_criterion(ph1.2, criterion = "loo")
+ph1.2 <- add_criterion(ph1.2, criterion = "waic")
+
+ph1.3 <- add_criterion(ph1.3, criterion = "loo")
+ph1.4 <- add_criterion(ph1.4, criterion = "loo")
+
+```
+
+
+```{r}
+loo_compare(ph1.1, ph1.2, ph1.3, ph1.4, criterion = 'loo') |>
+    print(simplify = FALSE)
+```
+
+Fitting the model that seemed to be what they did was one of the worst ones when comparring loo values. If anything, adding a small smoothing parameter via GAM worked better, but domain knowledge is needed to better understand that extreme outlier, and know which model we would want to use. Also, what happens when Tax rate is 40%?!
+
+
+```{r}
+
+x <- scale(d$tax_rate)
+.center <- attr(x, 'scaled:center')
+.scale <- attr(x, 'scaled:scale')
+
+# tax rate is 40%
+tibble(rate = seq(-2.5, 2.5, 0.1)) |>
+    mutate(tax_rate = (rate * .scale) + .center) |>
+    tidybayes::add_epred_draws(ph1.3) |>
+    ungroup() |>
+    group_by(tax_rate, rate) |>
+    tidybayes::median_hdci() |>
+    ggplot(aes(rate, .epred)) +
+    geom_point() +
+    geom_point(data = d, aes(y = rev, color = 'actual'))
+```
+
+### 2. Student T laffer
+
+
+```{r}
+ph2 <-
+  brm(
+    data = d,
+    family = student,
+    bf(rev ~ 1 + rate, nu = 2),
+    prior = c(
+      prior(normal(0, 0.2), class = Intercept),
+      prior(normal(0, 0.5), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 5,
+  )
+
+
+```
+
+
+```{r}
+ph2
+```
+
+### 3. Island models
+
+```{r}
+p_logp <- function(p) {
+  if (p == 0) return(0)
+  p * log(p)
+}
+calc_entropy <- function(x) {
+  avg_logprob <- sum(map_dbl(x, p_logp))
+  -1 * avg_logprob
+}
+islands <- tibble(
+  island = paste("Island", 1:3),
+  a = c(0.2, 0.8, 0.05),
+  b = c(0.2, 0.1, 0.15),
+  c = c(0.2, 0.05, 0.7),
+  d = c(0.2, 0.025, 0.05),
+  e = c(0.2, 0.025, 0.05)
+) %>%
+  pivot_longer(-island, names_to = "species", values_to = "prop")
+
+calc_entropy
+
+islands %>%
+  group_by(island) %>%
+  summarize(prop = list(prop), .groups = "drop") %>%
+  mutate(entropy = map_dbl(prop, calc_entropy))
+```
+
+
+```{r}
+d_kl <- function(p, q) {
+  sum(p * (log(p) - log(q)))
+}
+
+crossing(model = paste("Island", 1:3), predicts = paste("Island", 1:3)) %>%
+  filter(model != predicts) %>%
+  left_join(islands, by = c("model" = "island")) %>%
+  rename(model_prop = prop) %>%
+  left_join(islands, by = c("predicts" = "island", "species")) %>%
+  rename(predict_prop = prop) %>%
+  group_by(model, predicts) %>%
+  summarize(q = list(model_prop), p = list(predict_prop), .groups = "drop") %>%
+  mutate(kl_distance = map2_dbl(p, q, d_kl))
+#> # A tibble: 6 × 5
+#>   model    predicts q         p         kl_distance
+#>   <chr>    <chr>    <list>    <list>          <dbl>
+#> 1 Island 1 Island 2 <dbl [5]> <dbl [5]>       0.866
+#> 2 Island 1 Island 3 <dbl [5]> <dbl [5]>       0.626
+#> 3 Island 2 Island 1 <dbl [5]> <dbl [5]>       0.970
+#> 4 Island 2 Island 3 <dbl [5]> <dbl [5]>       1.84
+#> 5 Island 3 Island 1 <dbl [5]> <dbl [5]>       0.639
+#> 6 Island 3 Island 2 <dbl [5]> <dbl [5]>       2.01
+```
+
+Island 1 has a lower kl_distance for each model. That is however because the model assigns equal likeihood for each bird to appear in island 1. Island 1 has the highest overall entropy. With that, it is less suprised at the values of the other islands. The other islands have lower entropy, and are more suprised at the distributions when they don't fit that island well.
+
+
+### 5. Foxes
+
+
+```{r}
+library(rethinking)
+data(foxes)
+d <- foxes
+
+rm(foxes)
+detach(package:rethinking, unload = T)
+```
+
+```{r}
+d <- d |>
+  as_tibble() |>
+  mutate(
+    avgfood = rethinking::standardize(avgfood),
+    gropusize = rethinking::standardize(groupsize),
+    area = rethinking::standardize(area),
+    weight = rethinking::standardize(weight)
+  )
+```
+
+```{r}
+p_area <- brm(
+  weight ~ area,
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr',
+  cores = 4
+) |>
+  add_criterion("loo")
+
+p_avgfood <- brm(
+  weight ~ avgfood,
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr',
+  cores = 4
+) |>
+  add_criterion("loo")
+
+p_groupsize_area <- brm(
+  weight ~ groupsize + area,
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr',
+  cores = 4
+) |>
+  add_criterion("loo")
+
+p_avgfood_groupsize <- brm(
+  weight ~ avgfood + groupsize,
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr',
+  cores = 4
+) |>
+  add_criterion("loo")
+
+
+p_all_3 <- brm(
+  weight ~ groupsize + area + avgfood,
+  data = d,
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  warmup = 500,
+  iter = 1000,
+  backend = 'cmdstanr',
+  cores = 4
+) |>
+  add_criterion("loo")
+
+```
+
+```{r}
+p_area <- add_criterion(p_area, "waic")
+p_avgfood <- add_criterion(p_area, "waic")
+p_groupsize_area <- add_criterion(p_groupsize_area, "waic")
+p_avgfood_groupsize <- add_criterion(p_avgfood_groupsize, "waic")
+p_all_3 <- add_criterion(p_all_3, "waic")
+
+
+output <- loo_compare(
+  p_area,
+  p_avgfood,
+  p_groupsize_area,
+  p_avgfood_groupsize,
+  p_all_3,
+  criterion = 'waic'
+)
+
+print(output, simplify = FALSE)
+
+plot_output <- output |>
+  as_tibble(rownames = 'model') |>
+  mutate(across(-model, as.numeric), model = fct_inorder(model))
+
+waic_val <- plot_output |>
+  select(model, waic, se = se_waic) |>
+  mutate(lb = waic - se, ub = waic + se)
+
+diff_val <- plot_output %>%
+  select(model, waic, se = se_diff) %>%
+  mutate(se = se * 2) %>%
+  mutate(lb = waic - se, ub = waic + se) %>%
+  filter(se != 0)
+
+ggplot() +
+  geom_pointrange(
+    data = waic_val,
+    mapping = aes(x = waic, xmin = lb, xmax = ub, y = fct_rev(model))
+  ) +
+  geom_pointrange(
+    data = diff_val,
+    mapping = aes(x = waic, xmin = lb, xmax = ub, y = fct_rev(model)),
+    position = position_nudge(y = 0.2),
+    shape = 2,
+    color = "#009FB7"
+  ) +
+  labs(x = "Deviance", y = NULL)
+```
+
+Area is independent of groupsize or weight, as long as it is conditioned on the other. The takeaway is that with different variables, the models preform similarly based on what parameters are included.
+
+There are 2 with groupsize and either area or avgfood. The parameters essentially contain the same amount of information. If it was area and avgfood, that would be different and likely worse.
+
+The other 2 single parameter models perform simlarly, with wider variance because of the additional bias from having less parameters. Area and avgfood contain similar levels of information.
+
+```{r}
+dagitty::dagitty(
+  "dag {
+    Area -> avgfood -> weight
+    Area -> avgfood -> groupsize -> weight
+    }"
+)
+```
