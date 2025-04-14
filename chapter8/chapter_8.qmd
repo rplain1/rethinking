@@ -1,0 +1,1586 @@
+
+```{r}
+library(brms)
+library(tidyverse)
+library(tidybayes)
+library(ggthemes)
+
+theme_set(
+  theme_pander() +
+    theme(
+      text = element_text(family = "Times"),
+      panel.background = element_rect(color = "black")
+    ))
+```
+
+
+```{r}
+data(rugged, package = "rethinking")
+d <- rugged
+rm(rugged)
+```
+
+
+```{r}
+library(ggdag)
+
+dag_coords <-
+  tibble(name = c("R", "G", "C", "U"), x = c(1, 2, 3, 2), y = c(2, 2, 2, 1))
+
+dagify(R ~ U, G ~ R + U + C, coords = dag_coords) %>%
+
+  ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_dag_point(
+    aes(color = name == "U"),
+    alpha = 1 / 2,
+    size = 6,
+    show.legend = F
+  ) +
+  geom_point(
+    x = 2,
+    y = 1,
+    size = 6,
+    shape = 1,
+    stroke = 3 / 4,
+    color = palette_pander(n = 2)[2]
+  ) +
+  geom_dag_text(color = "black", family = "Times") +
+  geom_dag_edges() +
+  scale_colour_pander() +
+  theme_dag()
+```
+
+It’s generally not a good idea to split up your data and run separate analyses when examining an interaction. McElreath listed four reasons why:
+
+- “There are usually some parameters, such as σ, that the model says do not depend in any way upon continent. By splitting the data table, you are hurting the accuracy of the estimates for these parameters” (p. 241).
+- “In order to acquire probability statements about the variable you used to split the data, cont_africa, in this case, you need to include it in the model” (p. 241).
+- “We many want to use information criteria or another method to compare models” (p. 241).
+- “Once you begin using multilevel models (Chapter 13), you’ll see that there are advantages to borrowing information across categories like ‘Africa’ and ‘not Africa’” (p. 241).
+
+### Making a rugged model
+
+```{r}
+# make the log version of criterion
+d <-
+  d %>%
+  mutate(log_gdp = log(rgdppc_2000)) |>
+  as_tibble()
+
+# extract countries with GDP data
+dd <-
+  d %>%
+  filter(complete.cases(rgdppc_2000)) %>%
+  # re-scale variables
+  mutate(
+    log_gdp_std = log_gdp / mean(log_gdp),
+    rugged_std = rugged / max(rugged)
+  )
+```
+
+#### Figure 8.2
+
+```{r}
+
+
+library(ggrepel)
+library(patchwork)
+
+# African nations
+p1 <-
+  dd %>%
+  filter(cont_africa == 1) %>%
+  ggplot(aes(x = rugged_std, y = log_gdp_std)) +
+  geom_smooth(
+    method = "lm",
+    formula = y ~ x,
+    fill = palette_pander(n = 2)[1],
+    color = palette_pander(n = 2)[1]
+  ) +
+  geom_point(color = palette_pander(n = 2)[1]) +
+  geom_text_repel(
+    data = . %>%
+      filter(country %in% c("Lesotho", "Seychelles")),
+    aes(label = country),
+    size = 3,
+    family = "Times",
+    seed = 8
+  ) +
+  labs(
+    subtitle = "African nations",
+    x = "ruggedness (standardized)",
+    y = "log GDP (as proportion of mean)"
+  )
+
+# Non-African nations
+p2 <-
+  dd %>%
+  filter(cont_africa == 0) %>%
+  ggplot(aes(x = rugged_std, y = log_gdp_std)) +
+  geom_smooth(
+    method = "lm",
+    formula = y ~ x,
+    fill = palette_pander(n = 2)[2],
+    color = palette_pander(n = 2)[2]
+  ) +
+  geom_point(color = palette_pander(n = 2)[2]) +
+  geom_text_repel(
+    data = . %>%
+      filter(country %in% c("Switzerland", "Tajikistan")),
+    aes(label = country),
+    size = 3,
+    family = "Times",
+    seed = 8
+  ) +
+  xlim(0, 1) +
+  labs(
+    subtitle = "Non-African nations",
+    x = "ruggedness (standardized)",
+    y = "log GDP (as proportion of mean)"
+  )
+
+# combine
+p1 +
+  p2 +
+  plot_annotation(
+    title = "Figure 8.2. Separate linear regressions inside and outside of Africa"
+  )
+```
+
+McElreath used `r_i - r_hat_i`, but for brms we will need to create a mean centered value
+
+```{r}
+mean(dd$rugged_std)
+#> [1] 0.2149601
+
+dd <-
+  dd %>%
+  mutate(rugged_std_c = rugged_std - mean(rugged_std))
+
+```
+
+Interesting, the prior is 1,1 for intercept.
+
+```{r}
+b8.1 <-
+  brm(
+    data = dd,
+    family = gaussian,
+    log_gdp_std ~ 1 + rugged_std_c,
+    prior = c(
+      prior(normal(1, 1), class = Intercept),
+      prior(normal(0, 1), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    sample_prior = T,
+    file = "fits/b08.01",
+    backend = 'cmdstanr'
+  )
+```
+
+Looking at the prior
+
+```{r}
+prior <- prior_draws(b8.1)
+
+set.seed(8)
+
+p1 <-
+  prior %>%
+  slice_sample(n = 50) %>%
+  rownames_to_column() %>%
+  expand_grid(rugged_std_c = c(-2, 2)) %>%
+  mutate(
+    log_gdp_std = Intercept + b * rugged_std_c,
+    rugged_std = rugged_std_c + mean(dd$rugged_std)
+  ) %>%
+
+  ggplot(aes(x = rugged_std, y = log_gdp_std, group = rowname)) +
+  geom_hline(yintercept = range(dd$log_gdp_std), linetype = 2) +
+  geom_line(color = palette_pander(n = 2)[2], alpha = .4) +
+  geom_abline(
+    intercept = 1.3,
+    slope = -0.6,
+    color = palette_pander(n = 2)[1],
+    linewidth = 2
+  ) +
+  labs(
+    subtitle = "Intercept ~ dnorm(1, 1)\nb ~ dnorm(0, 1)",
+    x = "ruggedness",
+    y = "log GDP (prop of mean)"
+  ) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0.5, 1.5))
+
+p1
+```
+
+the slopes of the priors are too unstable and do not produce realistic values
+
+```{r}
+prior %>%
+  summarise(a = sum(abs(b) > abs(-0.6)) / nrow(prior))
+
+#> a
+# 1 0.5315
+```
+
+tighten the prior
+
+```{r}
+b8.1b <-
+  brm(
+    data = dd,
+    family = gaussian,
+    log_gdp_std ~ 1 + rugged_std_c,
+    prior = c(
+      prior(normal(1, 0.1), class = Intercept),
+      prior(normal(0, 0.3), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    sample_prior = T,
+    file = "fits/b08.01b",
+    backend='cmdstanr'
+  )
+```
+
+
+```{r}
+set.seed(8)
+
+p2 <-
+  prior_draws(b8.1b) %>%
+  slice_sample(n = 50) %>%
+  rownames_to_column() %>%
+  expand_grid(rugged_std_c = c(-2, 2)) %>%
+  mutate(
+    log_gdp_std = Intercept + b * rugged_std_c,
+    rugged_std = rugged_std_c + mean(dd$rugged_std)
+  ) %>%
+
+  ggplot(aes(x = rugged_std, y = log_gdp_std, group = rowname)) +
+  geom_hline(yintercept = range(dd$log_gdp_std), linetype = 2) +
+  geom_line(color = palette_pander(n = 2)[2], alpha = .4) +
+  scale_y_continuous("", breaks = NULL) +
+  labs(
+    subtitle = "Intercept ~ dnorm(1, 0.1)\nb ~ dnorm(0, 0.3)",
+    x = "ruggedness"
+  ) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0.5, 1.5))
+
+p1 +
+  p2 +
+  plot_annotation(
+    title = "Simulating in search of reasonable priors for the terrain ruggedness example.",
+    theme = theme(plot.title = element_text(size = 12))
+  )
+```
+
+### Ading an indicator variable isn't enough
+
+Just used characters, not even a factor, and then pass 0 for the intercept in `brms`
+```{r}
+dd <-
+  dd %>%
+  mutate(cid = if_else(cont_africa == 1, "1", "2"))
+```
+
+
+```{r}
+b8.2 <-
+  brm(
+    data = dd,
+    family = gaussian,
+    log_gdp_std ~ 0 + cid + rugged_std_c,
+    prior = c(
+      prior(normal(1, 0.1), class = b, coef = cid1),
+      prior(normal(1, 0.1), class = b, coef = cid2),
+      prior(normal(0, 0.3), class = b, coef = rugged_std_c),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    file = "fits/b08.02",
+    backend = 'cmdstanr'
+  )
+
+b8.1b <- add_criterion(b8.1b, "waic")
+b8.2 <- add_criterion(b8.2, "waic")
+
+loo_compare(b8.1b, b8.2, criterion = "waic") %>% print(simplify = F)
+
+model_weights(b8.1b, b8.2, weights = "waic") %>% round(digits = 3)
+```
+
+
+```{r}
+print(b8.2)
+```
+
+
+```{r}
+post <-
+  as_draws_df(b8.2) %>%
+  mutate(diff = b_cid1 - b_cid2)
+
+qi(post$diff, .width = .89)
+```
+
+Including the idnicator didn't change the model to have a postive and negative sloper for africa and non-africa.
+
+
+```{r}
+nd <-
+  crossing(
+    cid = 1:2,
+    rugged_std = seq(from = -0.2, to = 1.2, length.out = 30)
+  ) %>%
+  mutate(rugged_std_c = rugged_std - mean(dd$rugged_std))
+
+f <-
+  fitted(b8.2, newdata = nd, probs = c(.015, .985)) %>%
+  data.frame() %>%
+  bind_cols(nd) %>%
+  mutate(cont_africa = ifelse(cid == 1, "Africa", "not Africa"))
+
+# what did we do?
+head(f)
+```
+
+
+```{r}
+dd %>%
+  mutate(cont_africa = ifelse(cont_africa == 1, "Africa", "not Africa")) %>%
+
+  ggplot(aes(x = rugged_std, fill = cont_africa, color = cont_africa)) +
+  geom_smooth(
+    data = f,
+    aes(y = Estimate, ymin = Q1.5, ymax = Q98.5),
+    stat = "identity",
+    alpha = 1 / 4,
+    linewidth = 1 / 2
+  ) +
+  geom_point(aes(y = log_gdp_std), size = 2 / 3) +
+  scale_fill_pander() +
+  scale_colour_pander() +
+  labs(
+    subtitle = "b8.2",
+    x = "ruggedness (standardized)",
+    y = "log GDP (as proportion of mean)"
+  ) +
+  coord_cartesian(xlim = c(0, 1)) +
+  theme(
+    legend.background = element_blank(),
+    legend.direction = "horizontal",
+    legend.position = c(.67, .93),
+    legend.title = element_blank()
+  )
+```
+
+Boundaries are meaningless!
+
+```{r}
+fitted(b8.2, newdata = nd, summary = F) %>%
+  data.frame() %>%
+  pivot_longer(everything()) %>%
+  bind_cols(expand_grid(draws = 1:4000, nd)) %>%
+  mutate(cont_africa = ifelse(cid == 1, "Africa", "not Africa")) %>%
+
+  ggplot(aes(
+    x = rugged_std,
+    y = value,
+    fill = cont_africa,
+    color = cont_africa
+  )) +
+  stat_lineribbon(
+    .width = seq(from = .03, to = .99, by = .03),
+    alpha = .1,
+    size = 0
+  ) +
+  geom_point(
+    data = dd %>%
+      mutate(cont_africa = ifelse(cont_africa == 1, "Africa", "not Africa")),
+    aes(y = log_gdp_std),
+    size = 2 / 3
+  ) +
+  scale_fill_pander() +
+  scale_colour_pander() +
+  labs(
+    subtitle = "b8.2",
+    x = "ruggedness (standardized)",
+    y = "log GDP (as proportion of mean)"
+  ) +
+  coord_cartesian(xlim = c(0, 1)) +
+  theme(
+    legend.background = element_blank(),
+    legend.direction = "horizontal",
+    legend.position = c(.67, .93),
+    legend.title = element_blank()
+  )
+```
+
+### Adding an interaction does work
+
+Adding in a new slope. We want to maintain that africa should not be more uncertain in the slope than non-africa, just as we did with the intercept.
+
+To do this in `brms`, we need to specify the nonlinear syntax.
+
+
+```{r}
+b8.3 <-
+  brm(
+    data = dd,
+    family = gaussian,
+    bf(
+      log_gdp_std ~ 0 + a + b * rugged_std_c,
+      a ~ 0 + cid,
+      b ~ 0 + cid,
+      nl = TRUE
+    ),
+    prior = c(
+      prior(normal(1, 0.1), class = b, coef = cid1, nlpar = a),
+      prior(normal(1, 0.1), class = b, coef = cid2, nlpar = a),
+      prior(normal(0, 0.3), class = b, coef = cid1, nlpar = b),
+      prior(normal(0, 0.3), class = b, coef = cid2, nlpar = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    file = "fits/b08.03",
+    backend = 'cmdstanr'
+  )
+```
+
+
+```{r}
+print(b8.3)
+```
+
+The standard error between model `b8.3` and `b8.2` is almost the same as the diffence between them. Additionally, there is a small amount of model weight in `b8.2`. That and the `p_waic` estimate above 0.4, there is a suggestion that the model is overfit.
+
+```{r}
+b8.1b <- add_criterion(b8.1b, "loo")
+b8.2 <- add_criterion(b8.2, "loo")
+b8.3 <- add_criterion(b8.3, c("loo", "waic"))
+
+loo_compare(b8.1b, b8.2, b8.3, criterion = "loo") %>% print(simplify = F)
+```
+
+
+```{r}
+model_weights(b8.1b, b8.2, b8.3, weights = "loo") %>% round(digits = 2)
+```
+
+Pareto `k` diagnostic plot (PSIS)
+```{r}
+loo(b8.3) %>%
+  plot()
+```
+
+finding the pareto k above 0.4
+```{r}
+tibble(k = b8.3$criteria$loo$diagnostics$pareto_k, row = 1:170) %>%
+  arrange(desc(k))
+```
+
+#### Bonus: Student-t
+
+```{r}
+b8.3t <-
+  brm(
+    data = dd,
+    family = student,
+    bf(
+      log_gdp_std ~ 0 + a + b * rugged_std_c,
+      a ~ 0 + cid,
+      b ~ 0 + cid,
+      nu = 2,
+      nl = TRUE
+    ),
+    prior = c(
+      prior(normal(1, 0.1), class = b, coef = cid1, nlpar = a),
+      prior(normal(1, 0.1), class = b, coef = cid2, nlpar = a),
+      prior(normal(0, 0.3), class = b, coef = cid1, nlpar = b),
+      prior(normal(0, 0.3), class = b, coef = cid2, nlpar = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    file = "fits/b08.03t",
+    backend = 'cmdstanr'
+  )
+```
+
+
+```{r}
+b8.3t <- add_criterion(b8.3t, c("loo", "waic"))
+
+loo_compare(b8.3, b8.3t, criterion = "loo") %>% print(simplify = F)
+```
+
+
+```{r}
+tibble(
+  Normal = b8.3$criteria$loo$diagnostics$pareto_k,
+  `Student-t` = b8.3t$criteria$loo$diagnostics$pareto_k
+) %>%
+  pivot_longer(everything(), values_to = "pareto_k") %>%
+
+  ggplot(aes(x = pareto_k, y = name)) +
+  geom_vline(xintercept = .4, linetype = 2, color = palette_pander(n = 5)[5]) +
+  stat_dots(
+    slab_fill = palette_pander(n = 4)[4],
+    slab_color = palette_pander(n = 4)[4]
+  ) +
+  annotate(
+    geom = "text",
+    x = .4,
+    y = 1.5,
+    label = "threshold",
+    angle = 90,
+    family = "Times",
+    color = palette_pander(n = 5)[5]
+  ) +
+  ylab(NULL) +
+  coord_cartesian(ylim = c(1.5, 2.4))
+```
+
+Comparing the parameters
+
+
+```{r}
+fixef(b8.3) %>% round(digits = 2)
+fixef(b8.3t) %>% round(digits = 2)
+```
+
+### Plotting the interaction
+
+
+```{r}
+countries <- c(
+  "Equatorial Guinea",
+  "South Africa",
+  "Seychelles",
+  "Swaziland",
+  "Lesotho",
+  "Rwanda",
+  "Burundi",
+  "Luxembourg",
+  "Greece",
+  "Switzerland",
+  "Lebanon",
+  "Yemen",
+  "Tajikistan",
+  "Nepal"
+)
+
+f <-
+  fitted(
+    b8.3,
+    # we already defined `nd`, above
+    newdata = nd,
+    probs = c(.015, .985)
+  ) %>%
+  data.frame() %>%
+  bind_cols(nd) %>%
+  mutate(
+    cont_africa = ifelse(cid == 1, "African nations", "Non-African nations")
+  )
+
+dd %>%
+  mutate(
+    cont_africa = ifelse(
+      cont_africa == 1,
+      "African nations",
+      "Non-African nations"
+    )
+  ) %>%
+
+  ggplot(aes(
+    x = rugged_std,
+    y = log_gdp_std,
+    fill = cont_africa,
+    color = cont_africa
+  )) +
+  geom_smooth(
+    data = f,
+    aes(y = Estimate, ymin = Q1.5, ymax = Q98.5),
+    stat = "identity",
+    alpha = 1 / 4,
+    linewidth = 1 / 2
+  ) +
+  geom_text_repel(
+    data = . %>% filter(country %in% countries),
+    aes(label = country),
+    size = 3,
+    seed = 8,
+    segment.color = "grey25",
+    min.segment.length = 0
+  ) +
+  geom_point(aes(y = log_gdp_std), size = 2 / 3) +
+  scale_fill_pander() +
+  scale_colour_pander() +
+  labs(x = "ruggedness (standardized)", y = "log GDP (as proportion of mean)") +
+  coord_cartesian(xlim = c(0, 1)) +
+  theme(legend.position = "none") +
+  facet_wrap(~cont_africa)
+```
+
+### Symmetry of intercations
+
+
+```{r}
+fitted(b8.3, newdata = nd, summary = F) %>%
+  data.frame() %>%
+  pivot_longer(everything()) %>%
+  bind_cols(expand_grid(draws = 1:4000, nd)) %>%
+  select(-name) %>%
+  pivot_wider(names_from = cid, values_from = value) %>%
+  mutate(delta = `1` - `2`) %>%
+
+  ggplot(aes(x = rugged_std, y = delta)) +
+  stat_lineribbon(
+    .width = .95,
+    fill = palette_pander(n = 8)[8],
+    alpha = 3 / 4
+  ) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  annotate(
+    geom = "text",
+    x = .2,
+    y = 0,
+    label = "Africa higher GDP\nAfrica lower GDP",
+    family = "Times"
+  ) +
+  labs(x = "ruggedness (standardized)", y = "expected difference log GDP") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(-0.3, 0.2))
+```
+
+### Continuous Interactions
+
+A winter flower
+
+```{r}
+library(tidyverse)
+library(brms)
+data(tulips, package = "rethinking")
+d <- tulips
+rm(tulips)
+
+glimpse(d)
+```
+
+
+```{r}
+d <-
+  d %>%
+  mutate(
+    blooms_std = blooms / max(blooms),
+    water_cent = water - mean(water),
+    shade_cent = shade - mean(shade)
+  )
+```
+
+
+```{r}
+b8.4 <-
+  brm(
+    data = d,
+    family = gaussian,
+    blooms_std ~ 1 + water_cent + shade_cent,
+    prior = c(
+      prior(normal(0.5, 0.25), class = Intercept),
+      prior(normal(0, 0.25), class = b, coef = water_cent),
+      prior(normal(0, 0.25), class = b, coef = shade_cent),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    #file = "fits/b08.04",
+    #backend = 'cmdstanr'
+  )
+```
+
+
+```{r}
+print(b8.4)
+```
+
+The description and formal notation of interaction models is confusing to me. I don't quite follow the algebra that creates the final result, but the final model is what I have been used to using for interactions. You have an added \beta coefficient that is associated with the multiplicative effect of the interaction parameters.
+
+
+```{r}
+b8.5 <-
+  brm(
+    data = d,
+    family = gaussian,
+    blooms_std ~ 1 + water_cent + shade_cent + water_cent:shade_cent,
+    prior = c(
+      prior(normal(0.5, 0.25), class = Intercept),
+      prior(normal(0, 0.25), class = b, coef = water_cent),
+      prior(normal(0, 0.25), class = b, coef = shade_cent),
+      prior(normal(0, 0.25), class = b, coef = "water_cent:shade_cent"),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    file = "fits/b08.05",
+    backend = 'cmdstanr'
+  )
+
+print(b8.5)
+```
+
+Plotting the triptych plot but instead using a combination of new data for each model, combined with fitted values, and passing to ggplot and wrapping the facets.
+
+```{r}
+# augment the data
+points <-
+  d %>%
+  expand_grid(fit = c("b8.4", "b8.5")) %>%
+  mutate(x_grid = str_c("shade_cent = ", shade_cent), y_grid = fit)
+
+# redefine `nd`
+nd <- crossing(shade_cent = -1:1, water_cent = c(-1, 1))
+
+# use `fitted()`
+set.seed(8)
+
+rbind(
+  fitted(b8.4, newdata = nd, summary = F, ndraws = 20),
+  fitted(b8.5, newdata = nd, summary = F, ndraws = 20)
+) %>%
+  # wrangle
+  data.frame() %>%
+  set_names(
+    mutate(nd, name = str_c(shade_cent, water_cent, sep = "_")) %>% pull()
+  ) %>%
+  mutate(row = 1:n(), fit = rep(c("b8.4", "b8.5"), each = n() / 2)) %>%
+  pivot_longer(-c(row:fit), values_to = "blooms_std") %>%
+  separate(name, into = c("shade_cent", "water_cent"), sep = "_") %>%
+  mutate(
+    shade_cent = shade_cent %>% as.double(),
+    water_cent = water_cent %>% as.double()
+  ) %>%
+  # these will come in handy for `ggplot2::facet_grid()`
+  mutate(x_grid = str_c("shade_cent = ", shade_cent), y_grid = fit) %>%
+
+  # plot!
+  ggplot(aes(x = water_cent, y = blooms_std)) +
+  geom_line(
+    aes(group = row),
+    color = palette_pander(n = 6)[6],
+    alpha = 1 / 5,
+    linewidth = 1 / 2
+  ) +
+  geom_point(data = points, color = palette_pander(n = 6)[6]) +
+  scale_x_continuous("Water (centered)", breaks = c(-1, 0, 1)) +
+  scale_y_continuous("Blooms (standardized)", breaks = c(0, .5, 1)) +
+  ggtitle("Posterior predicted blooms") +
+  coord_cartesian(xlim = c(-1, 1), ylim = c(0, 1)) +
+  theme(
+    strip.background = element_rect(
+      fill = alpha(palette_pander(n = 2)[2], 1 / 3)
+    )
+  ) +
+  facet_grid(y_grid ~ x_grid)
+```
+
+#### Plotting priors sepcficically for these models
+
+```{r}
+b8.4p <-
+  update(
+    b8.4,
+    sample_prior = "only",
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    file = "fits/b08.04p",
+    backend = 'cmdstanr'
+  )
+
+b8.5p <-
+  update(
+    b8.5,
+    sample_prior = "only",
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    file = "fits/b08.05p",
+    backend = 'cmdstanr'
+  )
+```
+
+```{r}
+set.seed(8)
+
+rbind(
+  fitted(b8.4p, newdata = nd, summary = F, ndraws = 20),
+  fitted(b8.5p, newdata = nd, summary = F, ndraws = 20)
+) %>%
+  # wrangle
+  data.frame() %>%
+  set_names(
+    mutate(nd, name = str_c(shade_cent, water_cent, sep = "_")) %>% pull()
+  ) %>%
+  mutate(
+    row = rep(1:20, times = 2),
+    fit = rep(c("b8.4", "b8.5"), each = n() / 2)
+  ) %>%
+  pivot_longer(-c(row:fit), values_to = "blooms_std") %>%
+  separate(name, into = c("shade_cent", "water_cent"), sep = "_") %>%
+  mutate(
+    shade_cent = shade_cent %>% as.double(),
+    water_cent = water_cent %>% as.double()
+  ) %>%
+  # these will come in handy for `ggplot2::facet_grid()`
+  mutate(x_grid = str_c("shade_cent = ", shade_cent), y_grid = fit) %>%
+
+  # plot!
+  ggplot(aes(x = water_cent, y = blooms_std, group = row)) +
+  geom_hline(yintercept = 0:1, linetype = 2) +
+  geom_line(
+    aes(alpha = row == 1, size = row == 1),
+    color = palette_pander(n = 6)[6]
+  ) +
+  scale_size_manual(values = c(1 / 2, 1)) +
+  scale_alpha_manual(values = c(1 / 3, 1)) +
+  scale_x_continuous("Water (centered)", breaks = c(-1, 0, 1)) +
+  scale_y_continuous("Blooms (standardized)", breaks = c(0, .5, 1)) +
+  ggtitle("Prior predicted blooms") +
+  coord_cartesian(xlim = c(-1, 1), ylim = c(-0.5, 1.5)) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(
+      fill = alpha(palette_pander(n = 2)[2], 1 / 3)
+    )
+  ) +
+  facet_grid(y_grid ~ x_grid)
+```
+
+## Bonus: Conditional effects
+
+Using our first model
+
+```{r}
+b8.1b$formula
+#> log_gdp_std ~ 1 + rugged_std_c
+```
+
+
+```{r}
+conditional_effects(b8.1b)
+```
+
+
+```{r}
+conditional_effects(b8.1b) %>%
+  plot(points = T)
+```
+
+
+```{r}
+conditional_effects(b8.1b, spaghetti = T, ndraws = 200) %>%
+  plot(
+    points = T,
+    point_args = c(alpha = 1 / 2, size = 1),
+    line_args = c(colour = "black")
+  )
+```
+
+
+```{r}
+b8.2$formula
+## log_gdp_std ~ 0 + cid + rugged_std_c
+conditional_effects(b8.2)
+```
+
+
+```{r}
+b8.3$formula
+conditional_effects(b8.3)
+```
+
+# Practice
+
+## Easy
+
+To review, the interaction is that multiple factors can have an association with the response variable, but if they don't interact to a certain degree - then the association is much different.
+
+The tulips example was water and shade. The inverse of shade, sun, and water both positively affect growth. However, sun without water does little and water without sun also doesn't do much. Therefore you need an interaction variable to determine the amount of each available
+
+### 1. Name a hypothetical thrid variable that would lead to an interaction effect
+
+- bread dough rises because of yeast
+temperature, low, medium, high
+- education leads to higher income
+what the education is in? 13 years of education in the same field is going to lead to higher income that 13 yeaars of sporadic education
+- gasoline makes a car go
+wheels were a good example given. The amount of gasoline is depenedent on whether or not the car has wheels available
+
+### 2. Which of the following explanations invokes an interaction?
+
+I'm really torn on this, but I think that the statement about getting political beliefs from your parents, unless it is from their friends, is the interaction. The response would be that it is likely the same as your parents, until interaction with friends allows for you to have a different belief system.
+
+- Caramelizing onions requires cooking over low heat and making sure the onions do not dry out.
+- A car will go faster when it has more cylinders or when it has better fuel injector.
+This is not an interation because either (or) can make it faster
+- Most people acquire their political beliefs from their parents, unless they get them instead from their friends.
+- Intelligent animal species tend to be either highly social or have manipulative appendages (hands, tentacles, etc.).
+I think this is another (or) statement as well. If you were modeling intelligence, one or the other could signal intelligence and both may be true.
+
+### 3.
+Going off of the fact that only one had an interaction from the previous
+- carmelization ~ heat
+- speed ~ cylinders + fuel injection
+- politics ~ parents_politics + friends_politics + parents:friends
+- intelligence ~ social + appendages
+
+## Medium
+
+### 1. Adding temperature to tulips
+
+In the model, we had shade and water. Now we add temperature, and none of the flowers bloomed at a hot temperature regardless of shade and water. I think you would model a three-way interaction. Where now it maters the combination of water and shade, but also the temperature. You must have a low temperature and existence of water and sun lack of complete shade to get growth.
+
+### 2. Make the bloom zero when temperature is hot
+C is a constant of 1 or 0 if temperature is 1 when cold.
+$\mu_i = C \times (\alpha + \beta_Wwater_i + \beta_Sshade_i + \beta_{WS}W_iS_i)$
+
+### 3. Ravens and wolves
+
+We would have an ecological dataset similar to `foxes`. This would have the ravens population size, and maybe some other factors like area. There could be a categorical or contious variable for wolves present in the area. The likely outcome is that ravens follow wolves for food in a symbiotic relationship. The wolves could have a causal influence on raven population.
+
+### 4. Tulips with postive and negative priors on water/shade
+
+`d` is the tulips dataset
+
+```{r}
+d <- d |> mutate(shade_inv = -1 * shade_cent)
+
+p8.m41 <-
+  brm(
+    blooms_std ~ 1 + water_cent + shade_inv + water_cent:shade_inv,
+    data = d,
+    family = gaussian,
+    prior = c(
+      prior(normal(0.5, 0.25), class = Intercept),
+      prior(lognormal(0, 1), class = b, coef = water_cent),
+      prior(lognormal(0, 1), class = b, coef = shade_inv),
+      prior(normal(0, 0.25), class = b, coef = "water_cent:shade_inv"),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 4000,
+    warmup = 2000,
+    chains = 4,
+    cores = 4,
+    seed = 1234,
+  )
+```
+
+well trying to do this with brms completely f'd up my enviornment and after extended hours can not get cmdstanr to work with brms at the moment. 0/10 recommend.
+
+## Hard
+
+### 1. Add bed to tulips
+
+
+```{r}
+d <- d |>
+  as_tibble() |>
+  mutate(bed_a = ifelse(bed == 'a', 'beda', 'other'))
+
+p8.h1 <-
+  brm(
+    blooms_std ~ 0 + bed_a + water_cent + shade_inv + water_cent:shade_inv,
+    data = d,
+    family = gaussian,
+    prior = c(
+      prior(normal(0, 0.25), class = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 4000,
+    warmup = 2000,
+    chains = 4,
+    cores = 4,
+    seed = 1234,
+  )
+
+```
+
+```{r}
+b8.5 <- b8.5 |> add_criterion(criterion = "waic")
+p8.h1 <- p8.h1 |> add_criterion(criterion = "waic")
+```
+
+```{r}
+loo_compare(b8.5, p8.h1, criterion = 'waic')
+```
+
+```{r}
+print(p8.h1)
+```
+
+
+```{r}
+b8.5 <- b8.5 |> add_criterion(criterion = "loo")
+p8.h1 <- p8.h1 |> add_criterion(criterion = "loo")
+loo_compare(b8.5, p8.h1, criterion = 'loo')
+```
+
+The se for both waic and loo hare over twice the result of the difference between the two models. It's unclear that adding bed adds any predictive power to the model.
+
+Separating out whether or not it is bed a did have a little bit better effect. Not much though, and without having any knowledge of the data generating process it is best not to learn that from the data.
+
+### 3. Rugged
+
+finding the pareto k above 0.4
+```{r}
+tibble(k = b8.3$criteria$loo$diagnostics$pareto_k, row = 1:170) %>%
+  arrange(desc(k))
+```
+
+#### Bonus: Student-t
+
+```{r}
+b8.3t <-
+  brm(
+    data = dd,
+    family = student,
+    bf(
+      log_gdp_std ~ 0 + a + b * rugged_std_c,
+      a ~ 0 + cid,
+      b ~ 0 + cid,
+      nu = 2,
+      nl = TRUE
+    ),
+    prior = c(
+      prior(normal(1, 0.1), class = b, coef = cid1, nlpar = a),
+      prior(normal(1, 0.1), class = b, coef = cid2, nlpar = a),
+      prior(normal(0, 0.3), class = b, coef = cid1, nlpar = b),
+      prior(normal(0, 0.3), class = b, coef = cid2, nlpar = b),
+      prior(exponential(1), class = sigma)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 8,
+    file = "fits/b08.03t",
+    backend = 'cmdstanr'
+  )
+```
+
+
+```{r}
+b8.3t <- add_criterion(b8.3t, c("loo", "waic"))
+
+loo_compare(b8.3, b8.3t, criterion = "loo") %>% print(simplify = F)
+```
+
+
+```{r}
+tibble(k = b8.3$criteria$loo$diagnostics$pareto_k, row = 1:170) %>%
+  arrange(desc(k))
+
+tibble(k = b8.3t$criteria$loo$diagnostics$pareto_k, row = 1:170) %>%
+  arrange(desc(k))
+```
+
+- a). When using the regular regression with modeling a normal gaussian distribution, there are a few countries that have very high PSIS values. Seychelles is one of the highest. The p_waic is greater than 0.6 and the PSIS is greater than 0.4. The other couttry is Switzerland.
+- b). using the robust regression, we model with the student_t distribution for the outcome. This allows larger tails than the gaussian distribution. Seychelles and Switzerland are no longer the highest values in `loo()` with either WAIC or PSIS. Seychelles is still number 2, however it is in a less influential range. This indicates that the model is not overfitting to the datapoint and better allowing for extreme circumstances to happen
+
+### 4. nettle
+
+
+```{r}
+library(tidyverse)
+library(brms)
+library(tidybayes)
+library(bayesplot)
+data(nettle, package = "rethinking")
+d <- nettle
+rm(nettle)
+
+d$lang.per.cap <- d$num.lang / d$k.pop
+
+# adjust fields for modeling
+d <- d |>
+  mutate(
+    area_log = log(area),
+    mean.growing.season_std = rethinking::standardize(mean.growing.season),
+    sd.growing.season_std = rethinking::standardize(sd.growing.season),
+    lang.per.cap_log = log(lang.per.cap)
+  ) |>
+  as_tibble()
+glimpse(d)
+
+```
+
+Rows: 74
+Columns: 8
+$ country             <fct> Algeria, Angola, Australia, Bangladesh
+$ num.lang            <int> 18, 42, 234, 37, 52, 38, 27, 209, 75, 94
+$ area                <int> 2381741, 1246700, 7713364, 143998, 112622
+$ k.pop               <int> 25660, 10303, 17336, 118745, 4889, 7612
+$ num.stations        <int> 102, 50, 134, 20, 7, 48, 10, 245, 6, 13
+$ mean.growing.season <dbl> 6.60, 6.22, 6.00, 7.40, 7.14, 6.92, 4.60
+$ sd.growing.season   <dbl> 2.29, 1.87, 4.17, 0.73, 0.99, 2.50, 1.69
+$ lang.per.cap        <dbl> 7.014809e-04, 4.076483e-03, 1.349792e-02
+
+We want to study that areas with more self-sufficient growing seasons leads to needing less languages to interact with the surrounding areas
+
+
+```{r}
+# there is some association here where the longer mean.growing.season, less languages
+d |>
+  ggplot(aes(mean.growing.season, -log(lang.per.cap))) +
+  geom_point()
+```
+
+```{r}
+# there might be another association here, low sd leads to lower languages
+d |>
+  ggplot(aes(sd.growing.season, -log(lang.per.cap))) +
+  geom_point()
+```
+
+
+```{r}
+
+prior_a <- brm(
+  log(lang.per.cap) ~ mean.growing.season_std + area_log,
+  data = d,
+  family = gaussian(),
+  sample_prior = 'only',
+  prior = c(
+    prior(normal(-5, 2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+
+pp_check(prior_a, ndraws = 50)
+yrep <- posterior_predict(prior_a)
+
+yrep |>
+  as_data_frame() |>
+  pivot_longer(everything()) |>
+  pull(value) |>
+  summary()
+
+summary(d$lang.per.cap_log)
+
+
+nd <- crossing(
+  mean.growing.season_std = seq(-2, 2, 0.5),
+  sd.growing.season_std = seq(-2, 2, 0.5)
+)
+
+model_a <- brm(
+  log(lang.per.cap) ~ mean.growing.season_std  + area_log,
+  data = d,
+  family = gaussian(),
+  prior = c(
+    prior(normal(-5, 2), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+print(model_a)
+
+
+
+```
+
+Modleing with mean and sd of growing seasons plus log of area, the relationship is showing a positive association with mean growing season to the log of languages per capitat. The log of area has a negative association. Meaning that the longer the growing season, the more languages per capita, and the more are, the less languages percaptia (if this model holds).
+
+
+```{r}
+prior_b <- brm(
+  log(lang.per.cap) ~ sd.growing.season_std + area_log,
+  data = d,
+  family = gaussian(),
+  sample_prior = 'only',
+  prior = c(
+    prior(normal(-5, 2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+
+pp_check(prior_a, ndraws = 50)
+yrep <- posterior_predict(prior_a)
+
+yrep |>
+  as_data_frame() |>
+  pivot_longer(everything()) |>
+  pull(value) |>
+  summary()
+
+summary(d$lang.per.cap_log)
+
+
+nd <- crossing(
+  mean.growing.season_std = seq(-2, 2, 0.5),
+  sd.growing.season_std = seq(-2, 2, 0.5)
+)
+
+model_b <- brm(
+  log(lang.per.cap) ~ sd.growing.season_std + area_log,
+  data = d,
+  family = gaussian(),
+  prior = c(
+    prior(normal(-5, 2), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+print(model_b)
+
+
+```
+
+Sd is showing a negative association. This would imply that the higher the standard deviation of the growing season, the less languages spoken. Larger uncertainty leads to larger networks and less languages with this hypothesis.
+
+
+```{r}
+prior_c <- brm(
+  log(lang.per.cap) ~
+    mean.growing.season_std +
+      sd.growing.season_std +
+      mean.growing.season_std:sd.growing.season_std +
+      area_log,
+  data = d,
+  family = gaussian(),
+  sample_prior = 'only',
+  prior = c(
+    prior(normal(-5, 2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+
+pp_check(prior_a, ndraws = 50)
+yrep <- posterior_predict(prior_a)
+
+yrep |>
+  as_data_frame() |>
+  pivot_longer(everything()) |>
+  pull(value) |>
+  summary()
+
+summary(d$lang.per.cap_log)
+
+
+nd <- crossing(
+  mean.growing.season_std = seq(-2, 2, 0.5),
+  sd.growing.season_std = seq(-2, 2, 0.5)
+)
+
+model_c <- brm(
+  log(lang.per.cap) ~
+    mean.growing.season_std +
+      sd.growing.season_std +
+      mean.growing.season_std:sd.growing.season_std +
+      area_log,
+  data = d,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 4), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+print(model_c)
+```
+
+The hypothesis is that more self sufficent ecologies have more languages spoken, because groups are able to isolate and provide for themselves more.
+
+Mean growing season has a positive association, and all other covariates have a negatige association. The longer the growing season, the more languages spoken. The interaction between the growign season length and deviation has a negative association.
+
+Model c is testing the hypothesis that longer growing seasons and higher variance, will have an overall reduction in languages because of the need to store and redistribute. They have productive growth, and need to maintain and use it.
+
+The variance and interaction with variance and the season will have an effect in reducing the languages spoken.
+
+### 5. Wines 2012
+
+
+```{r}
+data(Wines2012, package = "rethinking")
+d <- Wines2012
+rm(Wines2012)
+d
+```
+
+
+```{r}
+d <- d |>
+  as_tibble() |>
+  mutate(
+    score_std = rethinking::standardize(score),
+    judge_ind = factor(as.integer(judge)),
+    wine_ind = factor(as.integer(wine)),
+    red = factor(flight, levels = c("white", "red")),
+    wine_amer = factor(wine.amer),
+    judge_amer = factor(judge.amer)
+  )
+```
+
+
+```{r}
+prior_wine <- brm(
+  bf(score_std ~ 0 + j + w, j ~ 0 + judge_ind, w ~ 0 + wine_ind, nl = TRUE),
+  data = d,
+  family = gaussian(),
+  sample_prior = 'only',
+  prior = c(
+    prior(normal(0, 0.5), nlpar = j),
+    prior(normal(0, 0.5), nlpar = w),
+    prior(exponential(2), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+
+
+pp_check(prior_wine)
+
+```
+
+I found that using a narrower sigma led to a better prior predictive check
+
+
+```{r}
+wine_model <- brm(
+  bf(score_std ~ 0 + j + w, j ~ 0 + judge_ind, w ~ 0 + wine_ind, nl = TRUE),
+  data = d,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 0.5), nlpar = j),
+    prior(normal(0, 0.5), nlpar = w),
+    prior(exponential(2), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+
+
+pp_check(wine_model)
+print(wine_model)
+```
+
+```{r}
+mcmc_plot(wine_model)
+```
+
+```{r}
+make_color_pal <- function(colors, bias = 1) {
+  get_color <- colorRamp(colors, bias = bias)
+  function(x) rgb(get_color(x), maxColorValue = 255)
+}
+ramp_blue <- make_color_pal(c("#FFFFFF", "#009FB7"), bias = 1)
+
+
+draws <- as_draws_df(wine_model) %>%
+  as_tibble() %>%
+  select(-sigma, -lp__) %>%
+  pivot_longer(
+    -c(.chain, .iteration, .draw),
+    names_to = c(NA, NA, "type", "num"),
+    names_sep = "_",
+    values_to = "value",
+  ) %>%
+  mutate(num = str_replace_all(num, "ind", ""), num = as.integer(num))
+
+draws %>%
+  filter(type == "judge") %>%
+  mutate(num = factor(num)) %>%
+  left_join(
+    d %>%
+      distinct(judge, judge_ind),
+    by = c("num" = "judge_ind")
+  ) %>%
+  select(judge, value) %>%
+  group_by(judge) %>%
+  median_hdci(.width = c(0.67, 0.89, 0.97)) %>%
+  ggplot(aes(y = fct_rev(judge), x = value, xmin = .lower, xmax = .upper)) +
+  geom_interval() +
+  scale_color_manual(
+    values = ramp_blue(seq(0.9, 0.1, length.out = 3)),
+    limits = as.character(c(0.67, 0.89, 0.97))
+  ) +
+  labs(y = NULL, x = "Parameter Value", color = "Interval")
+```
+
+
+### 6. wine and judge features
+
+
+```{r}
+ph6 <- brm(
+  score_std ~ wine_amer + judge_amer + red,
+  data = d,
+  family = gaussian,
+  prior = c(
+    prior(normal(0, 0.2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(exponential(1), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+
+fixef(ph6)
+
+ph6 |>
+  as_draws_df() |>
+  select(starts_with('b_')) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(value, name)) +
+  stat_pointinterval()
+  group_by(name) |>
+  median_hdci(.width = c(0.67, 0.89, 0.97)) # you can supply multiple widths
+
+
+
+
+```
+
+
+Trying the other syntax
+
+
+```{r}
+ph6_nl <- brm(
+  bf(
+    score_std ~ wineregion + judgeregion + red,
+    wineregion ~ 0 + wineregion,
+    judgeregion ~ 0 + judgeregion,
+    red ~ 0 + red,
+    nl = TRUE
+  ),
+  data = d |> rename(wineregion = wine_amer, judgeregion = judge_amer),
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 0.5), nlpar = wineregion),
+    prior(normal(0, 0.5), nlpar = judgeregion),
+    prior(normal(0, 0.5), nlpar = red),
+    prior(exponential(2), class = sigma)
+  ),
+  chains = 4,
+  cores = 4,
+  backend = 'cmdstanr'
+)
+
+ph6_nl |>
+  as_draws_df() |>
+  select(starts_with('b_')) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(value, name)) +
+  stat_pointinterval()
+```
+
+
+### 7. Interaction of variables
+
+
+
+```{r}
+b8h7 <- brm(
+  score_std ~
+    wine_amer +
+      judge_amer +
+      red +
+      wine_amer:judge_amer +
+      wine_amer:red +
+      judge_amer:red,
+  data = d,
+  family = gaussian,
+  prior = c(
+    prior(normal(0, 0.2), class = Intercept),
+    prior(normal(0, 0.5), class = b),
+    prior(normal(0, 0.25), class = b, coef = judge_amer1:redred),
+    prior(normal(0, 0.25), class = b, coef = wine_amer1:judge_amer1),
+    prior(normal(0, 0.25), class = b, coef = wine_amer1:redred),
+    prior(exponential(1), class = sigma)
+  ),
+  iter = 4000,
+  warmup = 2000,
+  chains = 4,
+  cores = 4,
+  seed = 1234
+)
+
+fixef(b8h7)
+```
+
+
+```{r}
+d %>%
+  distinct(wine_amer, judge_amer, red) %>%
+  mutate(
+    combo = glue::glue(
+      "{ifelse(judge_amer == 0, 'French', 'American')} judge, ",
+      "{ifelse(wine_amer == 0, 'French', 'American')} wine"
+    )
+  ) %>%
+  add_epred_draws(b8h7) %>%
+  median_hdi(.width = c(0.67, 0.89, 0.97)) %>%
+  ggplot(aes(x = .epred, xmin = .lower, xmax = .upper, y = combo)) +
+  facet_wrap(~red, nrow = 1, labeller = as_labeller(str_to_title)) +
+  geom_interval() +
+  scale_color_manual(
+    values = ramp_blue(seq(0.9, 0.1, length.out = 3)),
+    breaks = c("0.67", "0.89", "0.97")
+  ) +
+  labs(x = "Value", y = NULL, color = "Interval")
+```
