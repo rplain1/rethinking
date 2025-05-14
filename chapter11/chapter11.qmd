@@ -1,0 +1,790 @@
+
+```{r}
+library(tidyverse)
+library(brms)
+library(bayesplot)
+library(tidybayes)
+library(cmdstanr)
+Sys.setenv(RSTUDIO = 1)
+```
+
+# Binomial Regression
+
+Chimps
+
+```{r}
+data(chimpanzees, package = "rethinking")
+d <- chimpanzees
+rm(chimpanzees)
+```
+
+
+```{r}
+d |>
+  distinct(prosoc_left, condition)
+```
+
+
+```{r}
+d <-
+  d %>%
+  mutate(treatment = factor(1 + prosoc_left + 2 * condition)) %>%
+  # this will come in handy, later
+  mutate(
+    labels = factor(
+      treatment,
+      levels = 1:4,
+      labels = c("r/n", "l/n", "r/p", "l/p")
+    )
+  )
+
+d %>%
+  count(condition, treatment, prosoc_left)
+```
+
+### Intercept model with prior
+```{r}
+b11.1 <-
+  brm(
+    data = d,
+    family = binomial,
+    pulled_left | trials(1) ~ 1,
+    prior(normal(0, 10), class = Intercept),
+    seed = 11,
+    sample_prior = T,
+    file = "fits/b11.01",
+    backend = 'cmdstan'
+  )
+```
+
+### Plot prior draws
+
+Note:
+- `prior_draws()` to access the prior data (did not know this and have been running seperate models...)
+- `inv_logit_scaled()` - easily compute the inverse logit-link (`exp(x) / (1 + exp(x))`)
+
+```{r}
+prior_draws(b11.1) %>% # SAMPLE PRIOR EASILY!!!
+  mutate(p = inv_logit_scaled(Intercept)) %>%
+
+  ggplot(aes(x = p)) +
+  geom_density(
+    fill = 'black',
+    linewidth = 0,
+    adjust = 0.1
+  ) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  xlab("prior prob pull left")
+```
+
+### Reduce the variance in prior
+
+```{r}
+b11.1b <-
+  brm(
+    data = d,
+    family = binomial,
+    pulled_left | trials(1) ~ 1,
+    prior(normal(0, 1.5), class = Intercept),
+    seed = 11,
+    sample_prior = T,
+    file = "fits/b11.01b",
+    backend = 'cmdstan'
+  )
+```
+
+### Compare priors
+
+The prior with wider variance was almost always either 0 or 1.The probability with the smaller variance spread across all values between 0 and 1.
+
+```{r}
+# wrangle
+bind_rows(prior_draws(b11.1), prior_draws(b11.1b)) %>%
+  mutate(
+    p = inv_logit_scaled(Intercept),
+    w = factor(rep(c(10, 1.5), each = n() / 2), levels = c(10, 1.5))
+  ) %>%
+
+  # plot
+  ggplot(aes(x = p, fill = w)) +
+  geom_density(linewidth = 0, alpha = 3 / 4, adjust = 0.1) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  labs(
+    title = expression(alpha %~% Normal(0 * ", " * italic(w))),
+    x = "prior prob pull left"
+  )
+```
+
+This verbosity is needed for each prior to get the values for `prior_draws()`. We could just use one prior without `coef`, but then it would just return a single column.
+
+I think we also did a non-linear function because we have 2 intercepts [`a`, `b`].
+- `a` is just the overall intercept
+- `b` is a formula to use `treatment` as an intercept
+
+```{r}
+# w = 10
+b11.2 <-
+  brm(
+    data = d,
+    family = binomial,
+    bf(pulled_left | trials(1) ~ a + b, a ~ 1, b ~ 0 + treatment, nl = TRUE),
+    prior = c(
+      prior(normal(0, 1.5), nlpar = a),
+      prior(normal(0, 10), nlpar = b, coef = treatment1),
+      prior(normal(0, 10), nlpar = b, coef = treatment2),
+      prior(normal(0, 10), nlpar = b, coef = treatment3),
+      prior(normal(0, 10), nlpar = b, coef = treatment4)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 11,
+    sample_prior = T,
+    file = "fits/b11.02",
+    backend = "cmdstan"
+  )
+
+# w = 0.5
+b11.3 <-
+  brm(
+    data = d,
+    family = binomial,
+    bf(pulled_left | trials(1) ~ a + b, a ~ 1, b ~ 0 + treatment, nl = TRUE),
+    prior = c(
+      prior(normal(0, 1.5), nlpar = a),
+      prior(normal(0, 0.5), nlpar = b, coef = treatment1),
+      prior(normal(0, 0.5), nlpar = b, coef = treatment2),
+      prior(normal(0, 0.5), nlpar = b, coef = treatment3),
+      prior(normal(0, 0.5), nlpar = b, coef = treatment4)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 11,
+    sample_prior = T,
+    file = "fits/b11.03",
+    backend = 'cmdstan'
+  )
+```
+
+Looking at the difference between treatments
+```{r}
+# wrangle
+prior <-
+  bind_rows(prior_draws(b11.2), prior_draws(b11.3)) %>%
+  mutate(
+    w = factor(rep(c(10, 0.5), each = n() / 2), levels = c(10, 0.5)),
+    p1 = inv_logit_scaled(b_a + b_b_treatment1),
+    p2 = inv_logit_scaled(b_a + b_b_treatment2)
+  ) %>%
+  mutate(diff = abs(p1 - p2))
+
+# plot
+prior %>%
+  ggplot(aes(x = diff, fill = w)) +
+  geom_density(linewidth = 0, alpha = 3 / 4, adjust = 0.1) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  labs(
+    title = expression(alpha %~% Normal(0 * ", " * italic(w))),
+    x = "prior diff between treatments"
+  )
+```
+
+Average of the prior-predictive difference distributions
+
+
+```{r}
+prior %>%
+  group_by(w) %>%
+  summarise(mean = mean(diff))
+```
+
+
+
+```{r}
+print(b11.3)
+
+```
+
+### Likelihood
+
+
+```{r}
+d %>%
+  summarise(grand_mean = mean(pulled_left))
+
+as_draws_df(b11.3) %>%
+  # transmute is mutate but returning 1 column
+  transmute(alpha = inv_logit_scaled(b_a_Intercept)) %>%
+  mean_qi()
+```
+
+
+```{r}
+d %>%
+  group_by(treatment) %>%
+  summarise(mean = mean(pulled_left))
+```
+
+Posteriors for each of the 4 treatments
+
+```{r}
+as_draws_df(b11.3) %>%
+  pivot_longer(b_b_treatment1:b_b_treatment4) %>%
+  mutate(
+    treatment = str_remove(name, "b_b_treatment"),
+    mean = inv_logit_scaled(b_a_Intercept + value)
+  ) %>%
+  group_by(treatment) %>%
+  mean_qi(mean)
+```
+
+### Full Model
+
+
+```{r}
+d <-
+  d %>%
+  mutate(actor = factor(actor))
+```
+
+Intercept index for actor and treatment
+```{r}
+b11.4 <-
+  brm(
+    data = d,
+    family = binomial,
+    bf(
+      pulled_left | trials(1) ~ a + b,
+      a ~ 0 + actor,
+      b ~ 0 + treatment,
+      nl = TRUE
+    ),
+    prior = c(
+      prior(normal(0, 1.5), nlpar = a),
+      prior(normal(0, 0.5), nlpar = b)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 11,
+    file = "fits/b11.04",
+    backend = 'cmdstan'
+  )
+
+print(b11.4) # 11 parameters
+```
+
+
+#### Actors
+
+MCMC plot for actor only. This is applying the inverse logit fucntion, which otherwise `mcmc_plot()` wouldn't do.
+
+```{r}
+post <- as_draws_df(b11.4)
+
+post %>%
+  pivot_longer(contains("actor")) %>%
+  mutate(
+    probability = inv_logit_scaled(value),
+    actor = factor(str_remove(name, "b_a_actor"), levels = 7:1)
+  ) %>%
+
+  ggplot(aes(x = probability, y = actor)) +
+  geom_vline(
+    xintercept = .5,
+    linetype = 3
+  ) +
+  stat_pointinterval(
+    .width = .95,
+    size = 1 / 2,
+  ) +
+  scale_x_continuous(expression(alpha[actor]), limits = 0:1) +
+  ylab(NULL) +
+  theme(axis.ticks.y = element_blank())
+```
+
+#### Treatments
+
+```{r}
+tx <- c("R/N", "L/N", "R/P", "L/P")
+
+post %>%
+  select(contains("treatment")) %>%
+  set_names("R/N", "L/N", "R/P", "L/P") %>%
+  pivot_longer(everything()) %>%
+  mutate(
+    probability = inv_logit_scaled(value),
+    treatment = factor(name, levels = tx)
+  ) %>%
+  mutate(treatment = fct_rev(treatment)) %>%
+
+  ggplot(aes(x = value, y = treatment)) +
+  geom_vline(
+    xintercept = 0,
+    linetype = 3
+  ) +
+  stat_pointinterval(
+    .width = .95,
+    size = 1 / 2,
+  ) +
+  labs(x = expression(beta[treatment]), y = NULL) +
+  theme(axis.ticks.y = element_blank())
+```
+
+#### Differences
+
+```{r}
+post %>%
+  mutate(
+    db13 = b_b_treatment1 - b_b_treatment3,
+    db24 = b_b_treatment2 - b_b_treatment4
+  ) %>%
+  pivot_longer(db13:db24) %>%
+  mutate(diffs = factor(name, levels = c("db24", "db13"))) %>%
+
+  ggplot(aes(x = value, y = diffs)) +
+  geom_vline(
+    xintercept = 0,
+    linetype = 3
+  ) +
+  stat_pointinterval(
+    .width = .95,
+    size = 1 / 2,
+  ) +
+  labs(x = "difference", y = NULL) +
+  theme(axis.ticks.y = element_blank())
+```
+
+
+```{r}
+d %>%
+  group_by(actor, treatment) %>%
+  summarise(proportion = mean(pulled_left)) %>%
+  filter(actor == 1)
+```
+
+
+```{r}
+p1 <-
+  d %>%
+  group_by(actor, treatment) %>%
+  summarise(proportion = mean(pulled_left)) %>%
+  left_join(
+    d %>% distinct(actor, treatment, labels, condition, prosoc_left),
+    by = c("actor", "treatment")
+  ) %>%
+  mutate(condition = factor(condition)) %>%
+
+  ggplot(aes(x = labels, y = proportion)) +
+  geom_hline(yintercept = .5) +
+  geom_line(
+    aes(group = prosoc_left),
+    linewidth = 1 / 4,
+  ) +
+  geom_point(aes(color = condition), size = 2.5, show.legend = F) +
+  labs(subtitle = "observed proportions")
+
+nd <-
+  d %>%
+  distinct(actor, treatment, labels, condition, prosoc_left)
+
+p2 <-
+  fitted(b11.4, newdata = nd) %>%
+  data.frame() %>%
+  bind_cols(nd) %>%
+  mutate(condition = factor(condition)) %>%
+
+  ggplot(aes(x = labels, y = Estimate, ymin = Q2.5, ymax = Q97.5)) +
+  geom_hline(yintercept = .5) +
+  geom_line(
+    aes(group = prosoc_left),
+    linewidth = 1 / 4,
+  ) +
+  geom_pointrange(aes(color = condition), fatten = 2.5, show.legend = F) +
+  labs(subtitle = "posterior predictions")
+
+# combine the two ggplots
+library(patchwork)
+
+(p1 / p2) &
+  scale_y_continuous(
+    "proportion left lever",
+    breaks = c(0, .5, 1),
+    limits = c(0, 1)
+  ) &
+  xlab(NULL) &
+  theme(
+    axis.ticks.x = element_blank(),
+    panel.background = element_rect(
+      fill = alpha("white", 1 / 10),
+      linewidth = 0
+    )
+  ) &
+  facet_wrap(~actor, nrow = 1, labeller = label_both)
+```
+
+2 More index variables
+
+```{r}
+d <-
+  d %>%
+  mutate(
+    side = factor(prosoc_left + 1), # right 1, left 2
+    cond = factor(condition + 1)
+  ) # no partner 1, partner 2
+```
+
+
+```{r}
+b11.5 <-
+  brm(
+    data = d,
+    family = binomial,
+    bf(
+      pulled_left | trials(1) ~ a + bs + bc,
+      a ~ 0 + actor,
+      bs ~ 0 + side,
+      bc ~ 0 + cond,
+      nl = TRUE
+    ),
+    prior = c(
+      prior(normal(0, 1.5), nlpar = a),
+      prior(normal(0, 0.5), nlpar = bs),
+      prior(normal(0, 0.5), nlpar = bc)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 11,
+    file = "fits/b11.05",
+    backend = 'cmdstan'
+  )
+
+b11.4 <- add_criterion(b11.4, c("loo", "waic"))
+b11.5 <- add_criterion(b11.5, c("loo", "waic"))
+
+loo_compare(b11.4, b11.5, criterion = "loo") %>% print(simplify = F)
+```
+
+
+```{r}
+print(b11.5)
+```
+
+### Relative vs absolute
+
+Take 11.4, where there were 7 actor and 4 treatment parameters from the 2 indexes, and get the proportional odds of the difference between 4 and 2 for treatment.
+
+```{r}
+as_draws_df(b11.4) %>%
+  mutate(proportional_odds = exp(b_b_treatment4 - b_b_treatment2)) %>%
+  mean_qi(proportional_odds)
+
+# A tibble: 1 × 6
+#   proportional_odds .lower .upper .width .point .interval
+#               <dbl>  <dbl>  <dbl>  <dbl> <chr>  <chr>
+# 1             0.929  0.518   1.53   0.95 mean   qi
+```
+
+0.92 is an 8% reduction in odds. That is the proportional odds. The new odds take the old odds and multiply them by the proportional odds.
+
+#### Rare disease example
+
+```{r}
+tibble(disease_rate = 1 / 1e7, fold_increase = 5) %>%
+  mutate(new_disease_rate = disease_rate * fold_increase)
+```
+
+Neither absolute or relative risk is suffcient for all purposes. No free lunch :meltingface:
+
+### Aggregated binomial
+
+```{r}
+d_aggregated <-
+  d %>%
+  group_by(treatment, actor, side, cond) %>%
+  summarise(left_pulls = sum(pulled_left)) %>%
+  ungroup()
+
+d_aggregated %>%
+  head(n = 8)
+```
+
+
+```{r}
+b11.6 <-
+  brm(
+    data = d_aggregated,
+    family = binomial,
+    bf(
+      left_pulls | trials(18) ~ a + b,
+      a ~ 0 + actor,
+      b ~ 0 + treatment,
+      nl = TRUE
+    ),
+    prior = c(
+      prior(normal(0, 1.5), nlpar = a),
+      prior(normal(0, 0.5), nlpar = b)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 11,
+    file = "fits/b11.06",
+    backend = 'cmdstan'
+  )
+
+print(b11.6)
+
+```
+
+Compare non-aggregated model and aggregated
+
+```{r}
+# this is just for fancy annotation
+text <-
+  tibble(value = c(1.4, 2.6), name = "b_a_actor7", fit = c("b11.6", "b11.4"))
+
+# rope in the posterior draws and wrangle
+bind_rows(as_draws_df(b11.4), as_draws_df(b11.6)) %>%
+  mutate(fit = rep(c("b11.4", "b11.6"), each = n() / 2)) %>%
+  pivot_longer(b_a_actor1:b_b_treatment4) %>%
+
+  # plot
+  ggplot(aes(x = value, y = name, color = fit)) +
+  stat_pointinterval(
+    .width = .95,
+    size = 2 / 3,
+    position = position_dodge(width = 0.5)
+  ) +
+  geom_text(
+    data = text,
+    aes(label = fit),
+    family = "Times",
+    position = position_dodge(width = 2.25)
+  ) +
+  labs(x = "posterior (log-odds scale)", y = NULL) +
+  theme(axis.ticks.y = element_blank(), legend.position = "none")
+```
+
+The outputs of the posterior for each parameter are roughly the same.
+
+
+```{r}
+b11.4 <- add_criterion(b11.4, "loo")
+b11.6 <- add_criterion(b11.6, "loo")
+loo_compare(b11.4, b11.6, criterion = "loo") %>% print(simplify = F)
+```
+
+The devience is different eventhough the posterior is roughly the same.
+
+```{r}
+# deviance of aggregated 6-in-9
+-2 * dbinom(6, size = 9, prob = 0.2, log = TRUE)
+#> [1] 11.79048
+
+# deviance of dis-aggregated
+-2 * sum(dbinom(c(1, 1, 1, 1, 1, 1, 0, 0, 0), size = 1, prob = 0.2, log = TRUE))
+#> [1] 20.65212
+```
+
+For LOO it is more like Leave-18-out when 1 observation contains 18 trials.
+
+##### Takeaway
+If you want to use PSIS and WAIC to evalute models through cross-validation, leave the data in an uncompressed form.
+
+### UC Berkley Admissions
+
+
+```{r}
+data(UCBadmit, package = "rethinking")
+d <- UCBadmit
+rm(UCBadmit)
+
+d
+```
+
+brms can handle using text as indicies, using a foctor is easier to understand the output.
+
+```{r}
+d <-
+  d %>%
+  mutate(
+    gid = factor(applicant.gender, levels = c("male", "female")),
+    case = factor(1:n())
+  )
+```
+
+
+```{r}
+b11.7 <-
+  brm(
+    data = d,
+    family = binomial,
+    admit | trials(applications) ~ 0 + gid,
+    prior(normal(0, 1.5), class = b),
+    iter = 2000,
+    warmup = 1000,
+    cores = 4,
+    chains = 4,
+    seed = 11,
+    file = "fits/b11.07",
+    backend = 'cmdstan'
+  )
+```
+
+#### Difference between male and female
+
+```{r}
+as_draws_df(b11.7) %>%
+  mutate(
+    diff_a = b_gidmale - b_gidfemale,
+    diff_p = inv_logit_scaled(b_gidmale) - inv_logit_scaled(b_gidfemale)
+  ) %>%
+  pivot_longer(contains("diff")) %>%
+  group_by(name) %>%
+  mean_qi(value, .width = .89)
+```
+
+Posterior check
+
+```{r}
+p <-
+  predict(b11.7) %>%
+  data.frame() %>%
+  bind_cols(d)
+
+text <-
+  d %>%
+  group_by(dept) %>%
+  summarise(
+    case = mean(as.numeric(case)),
+    admit = mean(admit / applications) + .05
+  )
+
+p %>%
+  ggplot(aes(x = case, y = admit / applications)) +
+  geom_pointrange(
+    aes(
+      y = Estimate / applications,
+      ymin = Q2.5 / applications,
+      ymax = Q97.5 / applications
+    ),
+    shape = 1,
+    alpha = 1 / 3
+  ) +
+  geom_point() +
+  geom_line(aes(group = dept)) +
+  geom_text(
+    data = text,
+    aes(y = admit, label = dept),
+    #color = wes_palette("Moonrise2")[2],
+    family = "serif"
+  ) +
+  scale_y_continuous("Proportion admitted", limits = 0:1) +
+  ggtitle("Posterior validation check") +
+  theme(axis.ticks.x = element_blank())
+```
+
+The posterior parameters are not fitting the data well at all.
+
+|> The problem in this case is that men and women did not apply to the same departments, and departments vary in their rates of admission. This makes the answer misleading….
+
+#### Condition on department and gender
+
+
+```{r}
+b11.8 <-
+  brm(
+    data = d,
+    family = binomial,
+    bf(
+      admit | trials(applications) ~ a + d,
+      a ~ 0 + gid,
+      d ~ 0 + dept,
+      nl = TRUE
+    ),
+    prior = c(
+      prior(normal(0, 1.5), nlpar = a),
+      prior(normal(0, 1.5), nlpar = d)
+    ),
+    iter = 4000,
+    warmup = 1000,
+    cores = 4,
+    chains = 4,
+    seed = 11,
+    file = "fits/b11.08",
+    backend = 'cmdstan'
+  )
+
+print(b11.8)
+```
+
+Compute the absolute and proportional (or relative) difference in $\alpha$
+
+Male's advantage relative to female is actually lower (negligible but lower)
+
+```{r}
+as_draws_df(b11.8) %>%
+  mutate(
+    diff_a = b_a_gidmale - b_a_gidfemale,
+    diff_p = inv_logit_scaled(b_a_gidmale) - inv_logit_scaled(b_a_gidfemale)
+  ) %>%
+  pivot_longer(contains("diff")) %>%
+  group_by(name) %>%
+  mean_qi(value, .width = .89)
+```
+
+Distribution by department
+- Males applied heavily to A and B
+- Female prodomonatly C and e
+
+```{r}
+d %>%
+  group_by(dept) %>%
+  mutate(proportion = applications / sum(applications)) %>%
+  select(dept, gid, proportion) %>%
+  pivot_wider(names_from = dept, values_from = proportion) %>%
+  mutate_if(is.double, round, digits = 2)
+```
+
+## Department is a confounder :bangbang:
+
+
+```{r}
+predict(b11.8) %>%
+  data.frame() %>%
+  bind_cols(d) %>%
+
+  ggplot(aes(x = case, y = admit / applications)) +
+  geom_pointrange(
+    aes(
+      y = Estimate / applications,
+      ymin = Q2.5 / applications,
+      ymax = Q97.5 / applications
+    ),
+    #color = wes_palette("Moonrise2")[1],
+    shape = 1,
+    alpha = 1 / 3
+  ) +
+  geom_point() +
+  geom_line(aes(group = dept)) +
+  geom_text(
+    data = text,
+    aes(y = admit, label = dept),
+    #color = wes_palette("Moonrise2")[2],
+    family = "serif"
+  ) +
+  scale_y_continuous("Proportion admitted", limits = 0:1) +
+  labs(
+    title = "Posterior validation check",
+    subtitle = "Though imperfect, this model is a big improvement"
+  ) +
+  theme(axis.ticks.x = element_blank())
+```
