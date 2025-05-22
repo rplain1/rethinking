@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "plotnine>=0.14.5",
     "polars>=1.29.0",
     "pymc>=5.22.0",
     "rpy2-arrow>=0.1.2",
+    "seaborn>=0.13.2",
 ]

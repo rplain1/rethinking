@@ -1,0 +1,336 @@
+
+```{r}
+library(tidyverse)
+library(brms)
+library(tidybayes)
+```
+
+
+```{r}
+set.seed(11)
+
+tibble(y = rbinom(1e5, 1000, 1 / 1000)) %>%
+  summarise(y_mean = mean(y), y_variance = var(y))
+```
+
+
+```{r}
+data(Kline, package = "rethinking")
+d <- Kline
+rm(Kline)
+
+d
+```
+
+
+```{r}
+d <-
+  d %>%
+  mutate(
+    log_pop_std = (log(population) - mean(log(population))) /
+      sd(log(population)),
+    cid = contact
+  )
+```
+
+With log-normal distribution, `normal(0, 10)` is extreme compared to `normal(3, 0.5)`. With poisson and the log-link function these need to be considered.
+```{r}
+tibble(
+  x = c(3, 22),
+  y = c(0.055, 0.04),
+  meanlog = c(0, 3),
+  sdlog = c(10, 0.5)
+) %>%
+  expand_grid(number = seq(from = 0, to = 100, length.out = 200)) %>%
+  mutate(
+    density = dlnorm(number, meanlog, sdlog),
+    group = str_c("alpha%~%Normal(", meanlog, ", ", sdlog, ")")
+  ) %>%
+
+  ggplot(aes(fill = group, color = group)) +
+  geom_area(
+    aes(x = number, y = density),
+    alpha = 3 / 4,
+    linewidth = 0,
+    position = "identity"
+  ) +
+  geom_text(
+    data = . %>% group_by(group) %>% slice(1),
+    aes(x = x, y = y, label = group),
+    family = "Times",
+    parse = T,
+    hjust = 0
+  ) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  xlab("mean number of tools") +
+  theme(legend.position = "none")
+
+
+tibble(x = c(10, 4), y = c(0.05, 0.5), mean = c(0, 3), sd = c(10, 0.5)) %>%
+  expand_grid(number = seq(from = -25, to = 25, length.out = 500)) %>%
+  mutate(
+    density = dnorm(number, mean, sd),
+    group = str_c("alpha%~%Normal(", mean, ", ", sd, ")")
+  ) %>%
+
+  ggplot(aes(fill = group, color = group)) +
+  geom_area(
+    aes(x = number, y = density),
+    alpha = 3 / 4,
+    linewidth = 0,
+    position = "identity"
+  ) +
+  geom_text(
+    data = . %>% group_by(group) %>% slice(1),
+    aes(x = x, y = y, label = group),
+    family = "Times",
+    parse = T,
+    hjust = 0
+  ) +
+  scale_y_continuous(NULL, breaks = NULL) +
+  xlab(expression(lambda ~ scale)) +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+# intercept only
+b11.9 <-
+  brm(
+    data = d,
+    family = poisson,
+    total_tools ~ 1,
+    prior(normal(3, 0.5), class = Intercept),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 11,
+    file = "fits/b11.09",
+    backend = 'cmdstan'
+  )
+
+# interaction model
+b11.10 <-
+  brm(
+    data = d,
+    family = poisson,
+    # a + b is the nl estimate
+    # a and b are both parameters
+    bf(total_tools ~ a + b * log_pop_std, a + b ~ 0 + cid, nl = TRUE),
+    prior = c(
+      prior(normal(3, 0.5), nlpar = a),
+      prior(normal(0, 0.2), nlpar = b)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 11,
+    file = "fits/b11.10",
+    backend = 'cmdstan'
+  )
+```
+
+```{r}
+print(b11.9)
+print(b11.10)
+```
+
+
+```{r}
+b11.9 <- add_criterion(b11.9, "loo")
+b11.10 <- add_criterion(b11.10, "loo")
+
+loo_compare(b11.9, b11.10, criterion = "loo") %>% print(simplify = F)
+model_weights(b11.9, b11.10, weights = "loo") %>% round(digits = 2)
+```
+
+
+```{r}
+loo(b11.10) %>% loo::pareto_k_table()
+```
+
+Plotting how much of an outlier Hawaii is
+
+
+```{r}
+cultures <- c("Hawaii", "Tonga", "Trobriand", "Yap")
+
+library(ggrepel)
+library(patchwork)
+nd <-
+  distinct(d, cid) %>%
+  expand_grid(log_pop_std = seq(from = -4.5, to = 2.5, length.out = 100))
+
+f <-
+  fitted(b11.10, newdata = nd, probs = c(.055, .945)) %>%
+  data.frame() %>%
+  bind_cols(nd)
+
+p1 <-
+  f %>%
+  ggplot(aes(x = log_pop_std, group = cid, color = cid)) +
+  geom_smooth(
+    aes(y = Estimate, ymin = Q5.5, ymax = Q94.5, fill = cid),
+    stat = "identity",
+    alpha = 1 / 4,
+    linewidth = 1 / 2
+  ) +
+  geom_point(
+    data = bind_cols(d, b11.10$criteria$loo$diagnostics),
+    aes(y = total_tools, size = pareto_k),
+    alpha = 4 / 5
+  ) +
+  geom_text_repel(
+    data = bind_cols(d, b11.10$criteria$loo$diagnostics) %>%
+      filter(culture %in% cultures) %>%
+      mutate(label = str_c(culture, " (", round(pareto_k, digits = 2), ")")),
+    aes(y = total_tools, label = label),
+    size = 3,
+    seed = 11,
+    color = "black",
+    family = "Times"
+  ) +
+  labs(x = "log population (std)", y = "total tools") +
+  coord_cartesian(xlim = range(b11.10$data$log_pop_std), ylim = c(0, 80))
+
+p2 <-
+  f %>%
+  mutate(
+    population = exp(
+      (log_pop_std * sd(log(d$population))) + mean(log(d$population))
+    )
+  ) %>%
+
+  ggplot(aes(x = population, group = cid, color = cid)) +
+  geom_smooth(
+    aes(y = Estimate, ymin = Q5.5, ymax = Q94.5, fill = cid),
+    stat = "identity",
+    alpha = 1 / 4,
+    linewidth = 1 / 2
+  ) +
+  geom_point(
+    data = bind_cols(d, b11.10$criteria$loo$diagnostics),
+    aes(y = total_tools, size = pareto_k),
+    alpha = 4 / 5
+  ) +
+  scale_x_continuous("population", breaks = c(0, 50000, 150000, 250000)) +
+  ylab("total tools") +
+  coord_cartesian(xlim = range(d$population), ylim = c(0, 80))
+
+(p1 | p2) &
+  scale_size(range = c(2, 5)) &
+  theme(legend.position = "none")
+```
+
+
+```{r}
+b11.11 <-
+  brm(
+    data = d,
+    family = poisson(link = "identity"), # not using log-link :scared:
+    bf(
+      total_tools ~ exp(a) * population^b / g,
+      a + b ~ 0 + cid,
+      g ~ 1,
+      nl = TRUE
+    ),
+    prior = c(
+      prior(normal(1, 1), nlpar = a),
+      prior(exponential(1), nlpar = b, lb = 0),
+      prior(exponential(1), nlpar = g, lb = 0)
+    ),
+    iter = 2000,
+    warmup = 1000,
+    chains = 4,
+    cores = 4,
+    seed = 11,
+    control = list(adapt_delta = .85),
+    file = "fits/b11.11",
+    backend = 'cmdstan'
+  )
+
+print(b11.11)
+
+```
+
+
+```{r}
+b11.11 <- add_criterion(b11.11, criterion = "loo", moment_match = T)
+loo(b11.11)
+```
+
+
+### Negative Binomial
+
+
+```{r}
+set.seed(11)
+
+num_days <- 30
+y <- rpois(num_days, lambda = 1.5)
+
+num_weeks <- 4
+y_new <- rpois(num_weeks, lambda = 0.5 * 7)
+
+(d <-
+  tibble(
+    y = c(y, y_new),
+    days = rep(c(1, 7), times = c(num_days, num_weeks)), # this is the exposure
+    monastery = rep(0:1, times = c(num_days, num_weeks))
+  ) %>%
+  mutate(log_days = log(days)))
+```
+
+Negative binomial has the lambda poisson parameter, as well as an exposure parameter
+
+we want the mean to follow:
+$log \mu_i = log \tau_i + \alpha_ + \beta Monastery_i$
+
+The offset $log \tau_i$ does not get a prior. In this context its value is added directly to the right side of the formula. In `brms`, you use the `offset()` function. Insert the variable (in this case `log_days` is preprocessed, but it could also be `offset(log(days))`)
+
+```{r}
+b11.12 <-
+  brm(
+    data = d,
+    family = poisson,
+    y ~ 1 + offset(log_days) + monastery,
+    prior = c(
+      prior(normal(0, 1), class = Intercept),
+      prior(normal(0, 1), class = b) # monastery
+    ),
+    iter = 2000,
+    warmup = 1000,
+    cores = 4,
+    chains = 4,
+    seed = 11,
+    file = "fits/b11.12",
+    backend = 'cmdstan'
+  )
+
+print(b11.12)
+```
+
+Parameters are on the per-one-unit-of-time scale. Ours is on the scale of log(\lambda) per one day.
+
+The `offset()` component is a fixed part of the model, similar to `v` in the student t distribution.
+
+To get the posterior, we need:
+\lambda_old = exp(\alpha)
+\lambda_new = exp(\alpha + \beta_monastery)
+
+
+```{r}
+as_draws_df(b11.12) %>%
+as_tibble() |>
+  mutate(
+    lambda_old = exp(b_Intercept),
+    lambda_new = exp(b_Intercept + b_monastery)
+  ) %>%
+  pivot_longer(contains("lambda")) %>%
+  mutate(name = factor(name, levels = c("lambda_old", "lambda_new"))) %>%
+  group_by(name) %>%
+  mean_hdi(value, .width = .89) %>%
+  mutate_if(is.double, round, digits = 2)
+```

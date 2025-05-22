@@ -10,6 +10,7 @@ Sys.setenv(RSTUDIO = 1)
 
 # Binomial Regression
 
+
 Chimps
 
 ```{r}

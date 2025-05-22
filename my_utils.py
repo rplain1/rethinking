@@ -7,9 +7,12 @@ import polars as pl
 rethnking = importr("rethinking")
 r_arrow = importr("arrow")
 
+RED = "#E37"
+BLUE = "C0"
 
-def r_to_py(str):
+
+def r_to_py(str, env_var="d"):
     r(str)
-    r_obj = r["d"]
+    r_obj = r[env_var]
     _df = pyra.rarrow_to_py_table(r_arrow.as_arrow_table(r_obj))
     return pl.from_arrow(_df)

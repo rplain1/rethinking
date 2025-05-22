@@ -1,0 +1,578 @@
+
+```{python}
+from my_utils import r_to_py, RED, BLUE
+import pymc as pm
+import arviz as az
+import pandas as pd
+from plotnine import *
+import numpy as np
+```
+
+4M1.
+
+```{python}
+with pm.Model() as model:
+    sigma = pm.Exponential('sigma', 1)
+    mu = pm.Normal('mu', 0, 10)
+
+    y = pm.Normal('y', mu=mu, sigma=sigma)
+
+    idata = pm.sample_prior_predictive()
+
+az.plot_trace(idata.prior)
+
+```
+
+4M3.
+
+```{python}
+d = r_to_py(
+    """
+    # load data again, since it's a long way back
+    library(rethinking)
+    data(Howell1); d <- Howell1; d <- d[ d$age >= 18 , ]
+
+    """
+)
+```
+
+```{python}
+with pm.Model() as m4_3:
+    weight = pm.Data("weight", d["weight"])
+
+    sigma = pm.Uniform("sigma", lower=0, upper=50)
+    alpha = pm.Normal("alpha", mu=178, sigma=20)
+
+    beta = pm.LogNormal("beta", mu=0, sigma=1)
+
+    mu = alpha + beta * (weight - weight.mean())
+    y = pm.Normal("y", mu=mu, sigma=sigma, observed=d["height"])
+
+with m4_3:
+    idata = pm.sample_prior_predictive()
+
+
+#az.plot_ppc(idata, group="prior")
+
+
+with m4_3:
+    idata.extend(pm.sample())
+
+az.plot_trace(idata.posterior)
+az.plot_pair(idata.posterior)
+
+df_4_3_cov = (
+    az.extract(idata, group="posterior", var_names=["sigma", "alpha", "beta"])
+    .to_dataframe()[["sigma", "alpha", "beta"]]
+    .reset_index()
+    .drop(["chain", "draw"], axis=1)
+    .cov()
+)
+
+
+with pm.Model() as m4_3_mod:
+    weight = pm.Data("weight", d["weight"])
+
+    sigma = pm.Uniform("sigma", lower=0, upper=50)
+    alpha = pm.Normal("alpha", mu=178, sigma=20)
+
+    beta = pm.LogNormal("beta", mu=0, sigma=1)
+
+    mu = alpha + beta * weight
+    y = pm.Normal("y", mu=mu, sigma=sigma, observed=d["height"])
+
+with m4_3_mod:
+    idata2 = pm.sample_prior_predictive()
+
+
+#az.plot_ppc(idata2, group="prior")
+
+
+with m4_3_mod:
+    idata2.extend(pm.sample())
+
+az.plot_trace(idata2.posterior)
+az.plot_pair(idata2.posterior)
+
+df_4_3_mod_cov = (
+    az.extract(idata2, group="posterior", var_names=["sigma", "alpha", "beta"])
+    .to_dataframe()[["sigma", "alpha", "beta"]]
+    .reset_index()
+    .drop(["chain", "draw"], axis=1)
+    .cov()
+)
+
+```
+
+```{python}
+
+with pm.Model() as model:
+    sigma = pm.Exponential("sigma", 1)
+    b = pm.Uniform("b", lower=0, upper=10)
+    a = pm.Normal('a', mu=0, sigma=10)
+    mu = a + b*x
+    y = pm.Normal('y', mu=mu, sigma=sigma)
+```
+
+The difference is that alpha and beta are negatively correlated with the model that doesn't subtract the mean from height.
+
+
+```{python}
+d1 = (
+    idata.posterior[["alpha", "beta"]]
+    .to_dataframe()
+    .reset_index()
+    .assign(mod="standard")
+)
+d2 = (
+    idata2.posterior[["alpha", "beta"]]
+    .to_dataframe()
+    .reset_index()
+    .assign(mod="non-standard")
+)
+d3 = pl.concat([pl.from_pandas(d1), pl.from_pandas(d2)])
+
+(
+    ggplot(d3)
+    + geom_density(aes("alpha", color="factor(mod)"))
+    + facet_wrap("mod", ncol=1, scales="free_x")
+)
+(
+    ggplot(d3)
+    + geom_density(aes("beta", color="factor(mod)"))
+    + facet_wrap("mod", ncol=1, scales="free_x")
+)
+```
+
+Beta stays roughly the same, but the intercept changes dramatically.
+
+
+```{python}
+with m4_3:
+    pp1 = pm.sample_posterior_predictive(idata)
+
+with m4_3_mod:
+    pp2 = pm.sample_posterior_predictive(idata2)
+```
+
+
+```{python}
+az.plot_ppc(pp1, group='posterior', num_pp_samples=100)
+az.plot_ppc(pp2, group='posterior', num_pp_samples=100)
+```
+
+The posterior predictions are roughly the same, it just sets the intercept up to have less than ideal sampling conditions which could get problematic as models and data grow more complex.
+
+
+## 4M.8 Cherry Splines
+
+
+```{python}
+d2 = r_to_py(
+    """
+    # load data again, since it's a long way back
+    library(rethinking)
+    data(cherry_blossoms); d <- cherry_blossoms; d <- d[complete.cases(d$doy), ]
+
+    """
+)
+```
+
+
+```{python}
+ggplot(d2, aes("year", "doy")) + geom_point(color=RED)
+```
+
+```{python}
+from patsy import dmatrix
+import numpy as np
+
+def generate_spline_basis(data, xdim="year", degree=2, n_bases=10):
+    n_knots = n_bases - 1
+    knots = np.quantile(data[xdim], np.linspace(0, 1, n_knots))
+    return dmatrix(
+        f"bs({xdim}, knots=knots, degree={degree}, include_intercept=True) - 1",
+        {xdim: data[xdim], "knots": knots[1:-1]},
+    )
+```
+
+```{python}
+n_bases = 20
+basis_set = generate_spline_basis(d2, "year", n_bases=n_bases) # DesignMatrix (827, n_bases)
+
+with pm.Model() as spline_model:
+
+    sigma = pm.Exponential("simga", 1)
+    alpha = pm.Normal("alpha", d2["doy"].mean(), d2["doy"].std())
+    beta = pm.Normal("beta", 0, 25, shape=n_bases)
+
+    mu = pm.Deterministic("mu", alpha + pm.math.dot(basis_set, beta.T)) # basis set @ beta.T
+    pm.Normal('y_rep', mu, sigma, observed=d2['year'])
+
+    idata_spline = pm.sample(nuts={'target_accept':0.9})
+```
+
+
+```{python}
+import matplotlib.pyplot as plt
+plt.close()
+_, ax = plt.subplots(figsize=(10, 3))
+plt.scatter(
+        x=d2['year'],
+        y=d2['doy']
+    )
+az.plot_hdi(d2['year'], idata_spline.posterior['mu'], color=RED, hdi_prob=0.89)
+```
+
+
+```{python}
+def fit_spline_model(data, xdim, ydim, n_bases=10):
+    basis_set = generate_spline_basis(data, xdim, n_bases=n_bases).base
+    with pm.Model() as spline_model:
+
+        # Priors
+        sigma = pm.Exponential("sigma", 1)
+        alpha = pm.Normal("alpha", data[ydim].mean(), data[ydim].std())
+        beta = pm.Normal("beta", 0, 10, shape=n_bases)
+
+        # Likelihood
+        mu = pm.Deterministic("mu", alpha + pm.math.dot(basis_set, beta.T))
+        pm.Normal("ydim_obs", mu, sigma, observed=data[ydim])
+
+        spline_inference = pm.sample(target_accept=0.95)
+
+    _, ax = plt.subplots(figsize=(10, 3))
+    plt.scatter(x=data[xdim], y=data[ydim])
+    az.plot_hdi(
+        data[xdim],
+        spline_inference.posterior["mu"],
+        color="k",
+        hdi_prob=0.89,
+        fill_kwargs=dict(alpha=0.3, label="Posterior Mean"),
+    )
+    plt.legend(loc="lower right")
+    plt.xlabel(f"{xdim}")
+    plt.ylabel(f"{ydim}")
+
+    return spline_model, spline_inference, basis_set
+
+
+blossom_model, blossom_inference, blossom_basis = fit_spline_model(
+    d2, "year", "doy", n_bases=20
+)
+```
+
+As you increase the number of knots, it fits (or overfits) the nuances of the data more. Widening the prior on beta will also impact how much it curves to fit to the data.
+
+
+## 4 H1.
+
+```{python}
+import polars as pl
+import pymc as pm
+import arviz as az
+from plotnine import ggplot, aes, geom_point, geom_ribbon, theme_minimal, labs
+
+d = pl.read_csv(
+    "https://raw.githubusercontent.com/dustinstansbury/statistical-rethinking-2023/refs/heads/main/data/Howell1.csv",
+    separator=";",
+).filter(pl.col("age") >= 18)
+
+with pm.Model() as m4_3:
+    weight = pm.Data("weight", d["weight"], dims=["obs_id"])
+
+    sigma = pm.Uniform("sigma", lower=0, upper=50)
+    alpha = pm.Normal("alpha", mu=178, sigma=20)
+
+    beta = pm.LogNormal("beta", mu=0, sigma=1)
+
+    mu = pm.Deterministic("mu", alpha + beta * (weight - d['weight'].mean()))
+    y = pm.Normal(
+        "y",
+        mu=mu,
+        sigma=sigma,
+        observed=d["height"],
+        shape=weight.shape,
+        dims=["obs_id"],
+    )
+
+    idata = pm.sample()
+
+
+new_weight = [46.95, 43.72, 64.78, 32.59, 54.63]
+with m4_3:
+    pm.set_data({"weight": new_weight})
+    pp = pm.sample_posterior_predictive(idata, predictions=True, var_names=["y", "mu"])
+
+
+posterior_h3 = idata.posterior.to_dataframe().reset_index()
+
+samples_beta = [
+    np.random.choice(posterior_h3["beta"], size=1000, replace=True).tolist()
+    for _ in new_weight
+]
+samples_alpha = [
+    np.random.choice(posterior_h3["alpha"], size=1000, replace=True).tolist()
+    for _ in new_weight
+]
+
+df = pl.DataFrame({"weight": new_weight, "beta": samples_beta, "alpha": samples_alpha})
+
+df_post_epred = df.explode(["beta", "alpha"]).with_columns(
+    epred=pl.col("alpha") + (pl.col("beta") * (pl.col("weight") - d["weight"].mean()))
+)
+df_base = df_post_epred.group_by("weight").mean()
+
+df_post_pred = pl.from_pandas(
+    pp.predictions.to_dataframe().reset_index()
+    # .assign(weight=lambda x: x.obs_id.map(dict(enumerate(new_weight))))
+).with_columns(
+    pl.col("obs_id")
+    .cast(pl.Float64)
+    .replace(dict(enumerate(new_weight)))
+    .alias("weight")
+)
+
+(
+    ggplot()
+    + geom_ribbon(
+        aes(x="weight", ymin="y_min", ymax="y_max", fill="type"),
+        data=df_post_pred.group_by("weight")
+        .agg(y_min=pl.col("y").min(), y_max=pl.col("y").max())
+        .with_columns(type=pl.lit("prediction")),
+        alpha=0.3,
+    )
+    + geom_ribbon(
+        aes(x="weight", ymin="epred_min", ymax="epred_max", fill="type"),
+        data=df_post_epred.group_by("weight")
+        .agg(epred_min=pl.col("epred").min(), epred_max=pl.col("epred").max())
+        .with_columns(type=pl.lit("epred")),
+        alpha=0.6,
+    )
+    + geom_point(aes("weight", "epred"), data=df_base)
+    + theme_minimal()
+    + labs(title="expected predictions and posterior predictive distributions")
+)
+
+
+
+
+```
+
+## 4H2.
+
+```{python}
+d_all = pd.read_csv(
+    "https://raw.githubusercontent.com/dustinstansbury/statistical-rethinking-2023/refs/heads/main/data/Howell1.csv",
+    sep=";",
+)
+
+d_young = d_all[d_all.age < 18]
+
+```
+
+```{python}
+ggplot(d_young, aes('weight', 'height')) + geom_point()
+```
+
+### Workflow
+- build model
+- sample prior
+- sample posterior
+- sample posterior predictive on data
+- predict on new data (optional)
+
+#### Build model
+
+```{python}
+with pm.Model(coords={'obs_id':np.arange(d_young.shape[0])}) as model:
+    data = pm.Data('weight', d_young['weight'], dims='obs_id')
+
+    sigma = pm.HalfNormal('sigma', sigma=1)
+    alpha = pm.Normal('alpha', mu=100, sigma=5)
+    beta = pm.Normal('beta', mu=1, sigma=1)
+
+    mu = pm.Deterministic("mu", alpha + beta*(data), dims='obs_id')
+    y = pm.Normal('y', mu=mu, sigma=sigma, observed=d_young['height'], dims='obs_id', shape=data.shape[0])
+
+    idata = pm.sample_prior_predictive()
+```
+
+```{python}
+az.plot_ppc(idata, group='prior')
+```
+
+#### Sample Posterior
+
+```{python}
+with model:
+    idata.extend(pm.sample(random_seed=527))
+```
+
+
+```{python}
+az.summary(idata.posterior)
+```
+
+#### Sample posterior predictive
+
+```{python}
+with model:
+    idata.extend(pm.sample_posterior_predictive(idata, extend_inferencedata=True))
+
+az.plot_ppc(idata, group='posterior', num_pp_samples=100)
+```
+
+#### Predict new data
+
+```{python}
+new_data = np.arange(5, 45)
+
+with model:
+    pm.set_data({"weight": new_data}, coords={"obs_id": np.arange(len(new_data))})
+    pp = pm.sample_posterior_predictive(idata, predictions=True, extend_inferencedata=False)
+
+```
+
+
+```{python}
+df_post_mu = (
+    idata.posterior["mu"]
+    .to_dataframe()
+    .reset_index()
+    .merge(d_young.assign(obs_id=np.arange(d_young.shape[0])), on="obs_id")
+    .assign(  # for plotting later
+        group=lambda x: x.draw.astype(str)
+        + "_"
+        + x.chain.astype(str)
+    )
+)
+
+df_preds = (
+    pp.predictions["y"]
+    .to_dataframe()
+    .reset_index()
+    .merge(
+        pd.DataFrame({"weight": new_data, "obs_id": np.arange(len(new_data))}),
+        on="obs_id",
+    )
+)
+
+df_pred_agg = (
+    df_preds
+    .groupby("weight")
+    .agg(
+        pp_mean=("y", "mean"),
+        pp_min=("y", lambda x: x.quantile(0.03)),
+        pp_max=("y", lambda x: x.quantile(0.97)),
+    )
+)
+```
+
+
+```{python}
+(
+    ggplot()
+    + geom_point(aes("weight", "height"), data=d_young)
+    + geom_line(
+        aes(x="weight", y="mu", group="group"),
+        data=df_post_mu[
+            df_post_mu.draw.isin(
+                np.random.choice(np.arange(0, 1000), size=int(5), replace=False)
+            )
+        ],
+    )
+    + geom_ribbon(aes('weight', 'pp_mean', ymin='pp_min', ymax='pp_max'), data=df_pred_agg.reset_index(), fill='blue', alpha=0.2)
+)
+```
+
+## 4H3
+
+```{python}
+with pm.Model(coords={"obs_id": np.arange(d_all.shape[0])}) as model:
+    data = pm.Data("weight", d_all["weight"], dims="obs_id")
+
+    sigma = pm.HalfNormal("sigma", sigma=10)
+    alpha = pm.Normal("alpha", mu=100, sigma=10)
+    beta = pm.Normal("beta", mu=1, sigma=10)
+
+    mu = pm.Deterministic("mu", alpha + beta * np.log(data), dims="obs_id")
+    y = pm.Normal(
+        "y",
+        mu=mu,
+        sigma=sigma,
+        observed=d_all["height"],
+        dims="obs_id",
+        shape=data.shape[0],
+    )
+
+    idata = pm.sample_prior_predictive()
+
+az.plot_ppc(idata, group="prior", num_pp_samples=10)
+```
+
+
+```{python}
+with model:
+    idata.extend(pm.sample(random_seed=527))
+
+with model:
+    idata.extend(pm.sample_posterior_predictive(idata, extend_inferencedata=True))
+
+az.plot_ppc(idata, group="posterior", num_pp_samples=100)
+
+new_data = np.arange(5, 65)
+
+with model:
+    pm.set_data({"weight": new_data}, coords={"obs_id": np.arange(len(new_data))})
+    pp = pm.sample_posterior_predictive(idata, predictions=True, extend_inferencedata=False)
+
+```
+
+
+```{python}
+df_post_mu = (
+    idata.posterior["mu"]
+    .to_dataframe()
+    .reset_index()
+    .merge(d_all.assign(obs_id=np.arange(d_all.shape[0])), on="obs_id")
+    .assign(  # for plotting later
+        group=lambda x: x.draw.astype(str) + "_" + x.chain.astype(str)
+    )
+)
+
+df_preds = (
+    pp.predictions["y"]
+    .to_dataframe()
+    .reset_index()
+    .merge(
+        pd.DataFrame({"weight": new_data, "obs_id": np.arange(len(new_data))}),
+        on="obs_id",
+    )
+)
+
+df_pred_agg = df_preds.groupby("weight").agg(
+    pp_mean=("y", "mean"),
+    pp_min=("y", lambda x: x.quantile(0.03)),
+    pp_max=("y", lambda x: x.quantile(0.97)),
+)
+
+(
+    ggplot()
+    + geom_point(aes("weight", "height"), data=d_all)
+    + geom_line(
+        aes(x="weight", y="mu", group="group"),
+        data=df_post_mu[
+            df_post_mu.draw.isin(
+                np.random.choice(np.arange(0, 1000), size=int(5), replace=False)
+            )
+        ],
+    )
+    + geom_ribbon(
+        aes("weight", "pp_mean", ymin="pp_min", ymax="pp_max"),
+        data=df_pred_agg.reset_index(),
+        fill="blue",
+        alpha=0.2,
+    )
+)
+```
