@@ -1,0 +1,145 @@
+
+
+```{r}
+Sys.setenv(RETICULATE_PYTHON = "managed")
+
+library(reticulate)
+library(dagitty)
+library(tidyverse)
+py_require('pymc')
+```
+
+### 5H1.
+
+```{r}
+## R code 5.44
+dag5h.1 <- dagitty("dag{M -> A -> D}")
+# D _||_ M | A
+```
+
+### 5H2. Fit the model, and halve the States marriage rate `M`.
+
+```{r}
+library(rethinking)
+data(WaffleDivorce)
+d <- WaffleDivorce
+
+d <- d |>
+    mutate(
+        D = rethinking::standardize(Divorce),
+        M = rethinking::standardize(Marriage),
+        A = rethinking::standardize(MedianAgeMarriage)
+    ) |>
+    as_tibble()
+```
+
+
+```{r}
+pm <- import('pymc', convert = FALSE)
+az <- import('arviz', convert = FALSE)
+plt <- import('matplotlib.pyplot', convert = FALSE)
+```
+
+```{r}
+py_d <- r_to_py(d)
+mod <- pm$Model(coords = list(state = py_d$Loc, features = c('M', 'A')))
+
+with(mod, {
+  data = pm$Data('data', py_d$loc[, c('M', 'A')], dims = c('state', 'features'))
+
+  alpha = pm$Normal('alpha', mu = 0, sigma = 0.2)
+  sigma = pm$Exponential('sigma', lam = 5)
+  betas = pm$Normal('betas', mu = 0, sigma = 0.2, dims = 'features')
+
+  mu = pm$Deterministic('mu', alpha + pm$math$dot(data, betas), dims = 'state')
+
+  y_rep = pm$Normal(
+    'y_rep',
+    mu = mu,
+    sigma = sigma,
+    observed = py_d$D,
+    dims = 'state' #,
+    #shape = data$shape[0]
+  )
+
+  idata = pm$sample_prior_predictive(random_seed = 42L)
+})
+az$plot_ppc(idata, group = 'prior')
+plt$show()
+```
+
+
+
+```{r}
+with(mod, {idata$extend(pm$sample())})
+
+```
+
+```{r}
+#TODO: currently only works with betas being named 'features'
+as_draws_var <- function(idata, param) {
+  df <- idata$posterior[[param]]$to_dataframe()$reset_index() |>
+    py_to_r() |>
+    as_tibble()
+
+  if ('features' %in% names(df)) {
+    df <- df |>
+      pivot_wider(
+        id_cols = c(chain, draw),
+        names_from = features,
+        values_from = betas
+      )
+  }
+
+  df
+}
+
+
+as_draws_df <- function(idata, ..., exclude = NULL) {
+
+  # get a list of all the available variables modeled in idata
+  all_params <- iterate(idata$posterior$data_vars$keys()) |>
+    vapply(as.character, character(1))
+
+  # If variables were passed in ..., use those
+  vars <- enquos(...)
+  if (length(vars) > 0) {
+    include_names <- sapply(vars, quo_name)
+    params <- intersect(all_params, include_names)
+  } else {
+    params <- all_params
+  }
+
+  # Remove excluded variables
+  if (!is.null(exclude)) {
+    params <- setdiff(params, exclude)
+  }
+
+  # Extract and join
+  df_posterior <- purrr::map(
+    .x = params,
+    ~ as_draws_var(idata, .x)
+  ) |>
+    reduce(.f = left_join, by = c("chain", "draw"))
+
+  df_posterior
+}
+
+
+idata |>
+  as_draws_df()
+
+idata |> as_draws_df(exclude = 'mu')
+
+idata |> as_draws_df(alpha, sigma)
+```
+
+
+```{r}
+idata |>
+    as_draws_df(exclude='mu') |>
+    select(-c(chain, draw)) |>
+    pivot_longer(everything()) |>
+    ggplot(aes(value, name)) +
+    tidybayes::stat_halfeye()
+```

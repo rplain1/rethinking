@@ -1,0 +1,444 @@
+
+```{python}
+import arviz as az
+import pymc as pm
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import xarray as xr
+
+from sklearn.preprocessing import StandardScaler
+
+from plotnine import *
+
+az.style.use("arviz-darkgrid")
+
+
+data = pd.read_csv(
+    "https://raw.githubusercontent.com/dustinstansbury/statistical-rethinking-2023/main/data/WaffleDivorce.csv",
+    sep=";",
+)
+data
+
+```
+
+
+```{python}
+
+scaler = StandardScaler()
+
+data[['D', 'A', 'M']] = scaler.fit_transform(data[['Divorce', 'MedianAgeMarriage', 'Marriage']])
+scaler.mean_
+scaler.scale_
+```
+
+
+```{python}
+with pm.Model(coords={ "obs_id":data.Loc,"features": ["M", "A"]}) as model:
+    _data = pm.Data("_data", data[["M", "A"]], dims=("obs_id", "features"))
+
+    alpha = pm.Normal("alpha", mu=0, sigma=1)
+    sigma = pm.Exponential("sigma", 1)
+    betas = pm.Normal("b", mu=0, sigma=1, dims="features")
+
+    mu = alpha + pm.math.dot(_data, betas)
+
+    y = pm.Normal("y_rep", mu=mu, sigma=sigma, observed=data['D'], dims=("obs_id"), shape=_data.shape[0])
+
+    idata = pm.sample_prior_predictive()
+
+az.plot_ppc(idata, group='prior', num_pp_samples=10)
+```
+
+
+```{python}
+with model:
+    idata.extend(pm.sample())
+
+az.summary(idata)
+```
+
+
+```{python}
+with model:
+    idata.extend(pm.sample_posterior_predictive(idata))
+
+az.plot_ppc(idata, group='posterior', num_pp_samples=100)
+```
+
+### causal impact
+
+```{python}
+with pm.do(model, {"_data": data[["M", "A"]].assign(M=lambda x: x['M'] * 2)}) as model_do_0:
+    idata_half_m = pm.sample_posterior_predictive(idata)
+
+```
+
+
+```{python}
+az.summary(idata_half_m.posterior_predictive).head()
+az.summary(idata.posterior_predictive).head()
+
+```
+
+
+
+```{python}
+n = 50
+age_counterfactuals = xr.DataArray(np.linspace(-3, 3, n))
+marriage_counterfactuals = xr.DataArray(np.zeros_like(age_counterfactuals))
+
+with model:
+    pm.set_data(
+        {
+            "_data": pd.DataFrame(
+                {"M": marriage_counterfactuals, "A": age_counterfactuals} # okay order matters
+            )
+        }, coords={'obs_id':np.arange(n)}
+    )
+    ppd = pm.sample_posterior_predictive(idata, extend_inferencedata=False, var_names=['y_rep'])
+
+
+az.plot_hdi(
+    age_counterfactuals,
+    ppd.posterior_predictive["y_rep"],
+    color="C0",
+    fill_kwargs={"alpha": 0.15},
+)
+
+plt.plot(
+    marriage_counterfactuals,
+    ppd.posterior_predictive["y_rep"].mean(dim=("chain", "draw")),
+    color="C0",
+)
+
+plt.xlabel("marriage counterfactual (in standard deviations)")
+plt.ylabel("causal effect (in std deviations)")
+plt.title("Causal effect of Marriage Rate on\nDivorce Rate in standard deviations");
+```
+
+
+```{python}
+ppd.posterior_predictive.to_dataframe()
+```
+
+# Hard
+
+```{python}
+import pandas as pd
+import arviz as az
+from typing import List, Optional, Union
+
+
+def as_draws_var(
+    idata: az.InferenceData, param: str, dims: str = "none"
+) -> pd.DataFrame:
+    """
+    Extract a single parameter from InferenceData as a tidy dataframe.
+
+    Parameters:
+    -----------
+    idata : az.InferenceData
+        ArviZ InferenceData object
+    param : str
+        Parameter name to extract
+    dims : str
+        Dimension name to pivot on (default 'none')
+
+    Returns:
+    --------
+    pd.DataFrame
+        Tidy dataframe with chain, draw, and parameter columns
+    """
+    # Extract the parameter as xarray DataArray and convert to dataframe
+    df = idata.posterior[param].to_dataframe().reset_index()
+
+    # If parameter has multiple dimensions and dims is specified
+    if dims != "none" and dims in df.columns:
+        # Pivot wider on chain and draw
+        df = df.pivot_table(
+            index=["chain", "draw"], columns=dims, values=param
+        ).reset_index()
+
+        # Flatten column names if they're multi-level
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [
+                f"{param}_{col}" if col not in ["chain", "draw"] else col
+                for col in df.columns.get_level_values(-1)
+            ]
+        else:
+            # Rename columns to include parameter name
+            df.columns = [
+                f"{param}_{col}" if col not in ["chain", "draw"] else col
+                for col in df.columns
+            ]
+
+    return df
+
+
+def as_draws_df(
+    idata: az.InferenceData,
+    include: Optional[List[str]] = None,
+    exclude: Optional[List[str]] = None,
+    dims: str = "none",
+) -> pd.DataFrame:
+    """
+    Extract multiple parameters from InferenceData as a tidy dataframe.
+
+    Parameters:
+    -----------
+    idata : az.InferenceData
+        ArviZ InferenceData object
+    include : List[str], optional
+        List of parameter names to include. If None, includes all parameters.
+    exclude : List[str], optional
+        List of parameter names to exclude
+    dims : str
+        Dimension name to pivot on (default 'none')
+
+    Returns:
+    --------
+    pd.DataFrame
+        Tidy dataframe with all requested parameters
+    """
+    # Get all available parameters
+    all_params = list(idata.posterior.data_vars.keys())
+
+    # Determine which parameters to include
+    if include is not None:
+        params = [p for p in include if p in all_params]
+    else:
+        params = all_params.copy()
+
+    # Remove excluded parameters
+    if exclude is not None:
+        params = [p for p in params if p not in exclude]
+
+    # Extract each parameter
+    dfs = []
+    for param in params:
+        df_param = as_draws_var(idata, param, dims=dims)
+        dfs.append(df_param)
+
+    # Join all dataframes
+    if len(dfs) == 0:
+        return pd.DataFrame()
+
+    result_df = dfs[0]
+    for df in dfs[1:]:
+        result_df = pd.merge(result_df, df, on=["chain", "draw"], how="left")
+
+    return result_df
+
+
+# Alternative version using method chaining (more pandas-like)
+def as_draws_df_method_chain(
+    idata: az.InferenceData,
+    include: Optional[List[str]] = None,
+    exclude: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """
+    Extract parameters using method chaining approach.
+    """
+    # Convert entire posterior to dataframe
+    df = idata.posterior.to_dataframe().reset_index()
+
+    # Filter columns if specified
+    param_cols = [col for col in df.columns if col not in ["chain", "draw"]]
+
+    if include is not None:
+        param_cols = [col for col in param_cols if col in include]
+
+    if exclude is not None:
+        param_cols = [col for col in param_cols if col not in exclude]
+
+    # Select relevant columns
+    final_cols = ["chain", "draw"] + param_cols
+    df = df[final_cols]
+
+    return df
+
+```
+
+
+
+```{python}
+from typing import List, Optional, Union
+
+
+def as_draws_var(
+    idata: az.InferenceData, param: str, dims: str = "auto"
+) -> pd.DataFrame:
+    """
+    Extract a single parameter from InferenceData as a tidy dataframe.
+
+    Parameters:
+    -----------
+    idata : az.InferenceData
+        ArviZ InferenceData object
+    param : str
+        Parameter name to extract
+    dims : str
+        Dimension name to pivot on ('auto' detects automatically, 'none' for no pivoting)
+
+    Returns:
+    --------
+    pd.DataFrame
+        Tidy dataframe with chain, draw, and parameter columns
+    """
+    # Extract the parameter as xarray DataArray
+    param_data = idata.posterior[param]
+
+    # Get dimensions excluding chain and draw
+    extra_dims = [dim for dim in param_data.dims if dim not in ["chain", "draw"]]
+
+    # Convert to dataframe
+    df = param_data.to_dataframe().reset_index()
+
+    # Determine if we should pivot
+    should_pivot = (dims == "auto" and len(extra_dims) > 0) or (dims in df.columns)
+
+    if should_pivot and len(extra_dims) > 0:
+        # Use the first extra dimension for pivoting if dims='auto'
+        pivot_dim = dims if dims in df.columns else extra_dims[0]
+
+        # Pivot wider on chain and draw
+        df = df.pivot_table(
+            index=["chain", "draw"], columns=pivot_dim, values=param
+        ).reset_index()
+
+        # Flatten column names and create descriptive names
+        if hasattr(df.columns, "get_level_values"):
+            # Handle MultiIndex columns
+            new_cols = []
+            for col in df.columns:
+                if col in ["chain", "draw"]:
+                    new_cols.append(col)
+                else:
+                    new_cols.append(f"{param}[{col}]")
+            df.columns = new_cols
+        else:
+            # Handle regular columns
+            df.columns = [
+                col if col in ["chain", "draw"] else f"{param}[{col}]"
+                for col in df.columns
+            ]
+
+    return df
+
+
+def as_draws_df(
+    idata: az.InferenceData,
+    include: Optional[Union[str, List[str]]] = None,
+    exclude: Optional[Union[str, List[str]]] = None,
+    dims: str = "auto",
+) -> pd.DataFrame:
+    """
+    Extract multiple parameters from InferenceData as a tidy dataframe.
+    Each parameter is processed individually to handle different dimensions correctly.
+
+    Parameters:
+    -----------
+    idata : az.InferenceData
+        ArviZ InferenceData object
+    include : Union[str, List[str]], optional
+        Parameter name(s) to include. If string, converts to single-item list.
+        If None, includes all parameters.
+    exclude : Union[str, List[str]], optional
+        Parameter name(s) to exclude. If string, converts to single-item list.
+    dims : str
+        Dimension handling ('auto' detects automatically, 'none' for no pivoting)
+
+    Returns:
+    --------
+    pd.DataFrame
+        Tidy dataframe with all requested parameters, properly handling different dimensions
+    """
+    # Get all available parameters
+    all_params = list(idata.posterior.data_vars.keys())
+
+    # Convert string inputs to lists
+    if include is not None:
+        include = [include] if isinstance(include, str) else include
+        params = [p for p in include if p in all_params]
+    else:
+        params = all_params.copy()
+
+    # Remove excluded parameters
+    if exclude is not None:
+        exclude = [exclude] if isinstance(exclude, str) else exclude
+        params = [p for p in params if p not in exclude]
+
+    if len(params) == 0:
+        return pd.DataFrame()
+
+    # Extract each parameter individually
+    dfs = []
+    for param in params:
+        df_param = as_draws_var(idata, param, dims=dims)
+        dfs.append(df_param)
+
+    # Join all dataframes on chain and draw
+    result_df = dfs[0]
+    for df in dfs[1:]:
+        result_df = pd.merge(result_df, df, on=["chain", "draw"], how="outer")
+
+    return result_df
+```
+
+```
+# Example usage and demonstration
+if __name__ == "__main__":
+    # Create sample InferenceData for demonstration
+    import numpy as np
+    import xarray as xr
+
+    # Simulate some posterior samples
+    np.random.seed(42)
+    n_chains, n_draws = 4, 1000
+
+    # Create sample data
+    posterior_data = {
+        "mu": (["chain", "draw"], np.random.normal(0, 1, (n_chains, n_draws))),
+        "sigma": (["chain", "draw"], np.random.gamma(2, 1, (n_chains, n_draws))),
+        "beta": (
+            ["chain", "draw", "beta_dim"],
+            np.random.normal(0, 0.5, (n_chains, n_draws, 3)),
+        ),
+    }
+
+    coords = {
+        "chain": range(n_chains),
+        "draw": range(n_draws),
+        "beta_dim": ["x1", "x2", "x3"],
+    }
+
+    posterior = xr.Dataset(posterior_data, coords=coords)
+    idata = az.InferenceData(posterior=posterior)
+
+    # Demonstrate usage
+    print("Single parameter extraction:")
+    mu_df = as_draws_var(idata, "mu")
+    print(mu_df.head())
+    print(f"Shape: {mu_df.shape}")
+
+    print("\nMulti-dimensional parameter with pivoting:")
+    beta_df = as_draws_var(idata, "beta", dims="beta_dim")
+    print(beta_df.head())
+    print(f"Shape: {beta_df.shape}")
+
+    print("\nAll parameters:")
+    all_df = as_draws_df(idata)
+    print(all_df.head())
+    print(f"Shape: {all_df.shape}")
+
+    print("\nSelected parameters:")
+    selected_df = as_draws_df(idata, include=["mu", "sigma"])
+    print(selected_df.head())
+    print(f"Shape: {selected_df.shape}")
+
+    print("\nExcluding parameters:")
+    excluded_df = as_draws_df(idata, exclude=["beta"])
+    print(excluded_df.head())
+    print(f"Shape: {excluded_df.shape}")
+```

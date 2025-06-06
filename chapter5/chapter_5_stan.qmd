@@ -1,0 +1,70 @@
+
+```{r}
+library(cmdstanr)
+library(tidyverse)
+
+library(cmdstanr)
+library(posterior)
+library(bayesplot)
+color_scheme_set("brightblue")
+```
+
+
+```{r}
+library(rethinking)
+data(WaffleDivorce)
+d <- WaffleDivorce
+
+# standardize variables
+d$D <- standardize(d$Divorce)
+d$M <- standardize(d$Marriage)
+d$A <- standardize(d$MedianAgeMarriage)
+```
+
+
+```{r}
+stan_data <- list(
+    N = nrow(d),
+    features = ncol(d[, c('M', 'A')]),
+    X = d[, c('M', 'A')],
+    y = d$D
+)
+```
+
+
+```{r}
+model <- cmdstan_model("chapter5/chapter_5.stan")
+
+fit <- model$sample(
+  data = stan_data,
+  chains = 4,
+  parallel_chains = 4,
+  refresh = 500
+)
+```
+
+
+```{r}
+# Extract posterior samples
+draws <- fit$draws()
+
+# Generate prior predictive samples
+prior_fit <- model$sample(
+  data = stan_data,
+  chains = 4,
+  fixed_param = TRUE,
+  iter_sampling = 1000
+)
+```
+
+
+```{r}
+y_rep_prior <- prior_fit$draws("y_rep")
+
+# Prior predictive check plot
+bayesplot::ppc_dens_overlay(stan_data$y, y_rep_prior[1:50, ]) +
+  ggtitle("Prior Predictive Check") +
+  xlab("y") +
+  ylab("Density")
+
+```

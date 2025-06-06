@@ -1,0 +1,314 @@
+
+```{r}
+library(tidyverse)
+library(brms)
+library(bayesplot)
+library(tidybayes)
+```
+
+```{r}
+Sys.setenv(RETICULATE_PYTHON = "managed")
+
+library(reticulate)
+reticulate::py_require('pymc')
+```
+
+```{r}
+library(rethinking)
+data(foxes)
+d <- foxes
+
+rm(foxes)
+detach(package:rethinking, unload = T)
+```
+
+
+
+```{r}
+dag_foxes <- dagitty::dagitty(
+    "dag {
+    Area -> avgfood -> weight
+    Area -> avgfood -> groupsize -> weight
+    }"
+  )
+)
+dag_foxes
+
+dagitty::impliedConditionalIndependencies(dag_foxes)
+```
+
+
+```{r}
+d <- d |>
+  as_tibble() |>
+  mutate(
+    avg_food_std = rethinking::standardize(avgfood),
+    group_size_std = rethinking::standardize(groupsize),
+    area_std = rethinking::standardize(area),
+    weight_std = rethinking::standardize(weight)
+  )
+```
+
+
+```{r}
+pm <- import('pymc', convert = FALSE)
+az <- import('arviz', convert = FALSE)
+plt <- import('matplotlib.pyplot', convert = FALSE)
+
+```
+
+# weight ~ area
+
+```{r}
+py_d <- r_to_py(d)
+
+mod <- pm$Model(coords = list(obs_id = 1L:nrow(d)))
+
+with(mod, {
+    data = pm$Data('data', py_d$loc[, c('area_std')], dims=c('obs_id'))
+
+    alpha = pm$Normal('alpha', mu = 0, sigma = 0.25)
+    beta = pm$Normal('beta', mu = 0, sigma = 0.25)
+    sigma = pm$Exponential('sigma', 5)
+
+    mu = pm$Deterministic('mu', alpha + beta * data, dims = 'obs_id')
+
+    y_rep = pm$Normal(
+        'y_rep',
+        mu = mu,
+        sigma = sigma,
+        observed = py_d$weight_std,
+        dims = 'obs_id'
+    )
+
+    idata = pm$sample_prior_predictive()
+})
+```
+
+
+```{r}
+az$plot_ppc(idata, group = 'prior')
+plt$show()
+```
+
+
+```{r}
+with(mod, {
+    idata$extend(pm$sample())
+    idata$extend(pm$sample_posterior_predictive(idata))
+})
+
+az$summary(idata)
+az$plot_forest(idata, var_names = 'beta')
+plt$show()
+
+idata |>
+    as_draws_df(exclude = 'mu')
+
+with(mod, pm$compute_log_likelihood(idata))
+az$loo(idata)
+```
+
+# weight ~ avgfood
+
+```{r}
+
+dagitty::impliedConditionalIndependencies(dag_foxes)
+```
+
+
+```{r}
+mod_food <- pm$Model(coords = list(obs_id = 1L:nrow(d)))
+
+with(mod_food, {
+  data = pm$Data('data', py_d$loc[, c('avg_food_std')], dims = 'obs_id')
+
+  alpha = pm$Normal('alpha', mu = 0, sigma = 0.25)
+  beta = pm$Normal('beta', mu = 0, sigma = 0.25)
+  sigma = pm$Exponential('sigma', 5)
+
+  mu = pm$Deterministic('mu', alpha + beta * data, dims = 'obs_id')
+
+  y_rep = pm$Normal(
+    'y_rep',
+    mu = mu,
+    sigma = sigma,
+    observed = py_d$weight_std,
+    dims = 'obs_id'
+  )
+
+  idata_food = pm$sample_prior_predictive()
+})
+
+az$plot_ppc(idata_food, group = 'prior')
+plt$show()
+```
+
+
+```{r}
+with(mod_food, {
+  idata_food$extend(pm$sample())
+  idata_food$extend(pm$sample_posterior_predictive(idata))
+})
+```
+
+
+```{r}
+az$plot_forest(idata_food, var_names = 'beta')
+plt$show()
+```
+
+# looking at both models betas
+
+```{r}
+az$plot_forest(
+  c(idata, idata_food),
+  combined = TRUE,
+  var_names = 'beta',
+  model_names = c('area', 'food')
+)
+plt$show()
+```
+
+The strange association is showing that you can increase food, and it will decrease weight in foxes. Both of these do not appear strong.
+
+# Because they are not alone!
+
+```{r}
+dagitty::adjustmentSets(dag_foxes, exposure='groupsize', outcome='weight')
+#{ avgfood }
+
+mod_group_food <- pm$Model(coords = list(obs_id = 1L:nrow(d), features=c('avgfood', 'groupsize')))
+
+with(mod_group_food, {
+  data = pm$Data('data', py_d$loc[, c('avg_food_std', 'group_size_std')], dims = c('obs_id', 'features'))
+
+  alpha = pm$Normal('alpha', mu = 0, sigma = 0.25)
+  beta = pm$Normal('beta', mu = 0, sigma = 0.25, dims='features')
+  sigma = pm$Exponential('sigma', 5)
+
+  mu = pm$Deterministic('mu', alpha + pm$math$dot(data, beta), dims = 'obs_id')
+
+  y_rep = pm$Normal(
+    'y_rep',
+    mu = mu,
+    sigma = sigma,
+    observed = py_d$weight_std,
+    dims = 'obs_id'
+  )
+
+  idata_group_food = pm$sample_prior_predictive()
+})
+```
+
+```{r}
+az$plot_ppc(idata_group_food, group = 'prior')
+plt$show()
+```
+
+
+```{r}
+with(mod_group_food, {
+  idata_group_food$extend(pm$sample())
+  idata_group_food$extend(pm$sample_posterior_predictive(idata))
+})
+```
+
+
+```{r}
+az$plot_forest(
+  c(idata, idata_food, idata_group_food),
+  combined = TRUE,
+  var_names = 'beta',
+  model_names = c('area', 'food', 'group, food')
+)
+plt$show()
+```
+
+```{r}
+as_draws_var <- function(idata, param) {
+  df <- idata$posterior[[param]]$to_dataframe()$reset_index() |>
+    py_to_r() |>
+    as_tibble()
+
+  if ('features' %in% names(df)) {
+    df <- df |>
+      pivot_wider(
+        id_cols = c(chain, draw),
+        names_from = features,
+        values_from = beta
+      )
+  }
+
+  df
+}
+
+
+as_draws_df <- function(idata, ..., exclude = NULL) {
+  # get a list of all the available variables modeled in idata
+  all_params <- iterate(idata$posterior$data_vars$keys()) |>
+    vapply(as.character, character(1))
+
+  # If variables were passed in ..., use those
+  vars <- enquos(...)
+  if (length(vars) > 0) {
+    include_names <- sapply(vars, quo_name)
+    params <- intersect(all_params, include_names)
+  } else {
+    params <- all_params
+  }
+
+  # Remove excluded variables
+  if (!is.null(exclude)) {
+    params <- setdiff(params, exclude)
+  }
+
+  # Extract and join
+  df_posterior <- purrr::map(
+    .x = params,
+    ~ as_draws_var(idata, .x)
+  ) |>
+    reduce(.f = left_join, by = c("chain", "draw"))
+
+  df_posterior
+}
+
+```
+
+```{r}
+idata |>
+  as_draws_df(beta) |>
+  mutate(
+    coef = 'area',
+    model = 'weight ~ area'
+  ) |>
+  bind_rows(
+    idata_food |>
+      as_draws_df(beta) |>
+      mutate(
+    coef = 'avgfood',
+        model = 'weight ~ avgfood'
+      )
+  ) |>
+  bind_rows(
+    idata_group_food |>
+      as_draws_df(beta) |>
+      mutate(model = 'weight ~ avgfood + area') |>
+      pivot_longer(avgfood:groupsize) |>
+      rename(
+        coef = name,
+        beta = value
+      )
+  ) |>
+    filter(model != 'weight ~ area')  |>
+    ggplot(aes(beta, coef, fill = model)) +
+    tidybayes::stat_halfeye(alpha = 0.5) +
+    geom_vline(xintercept = 0, linetype = 'dashed') +
+    theme_light() +
+    theme(legend.position = 'top')
+
+
+
+
+
+```

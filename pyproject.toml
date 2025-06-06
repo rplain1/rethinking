@@ -9,5 +9,6 @@ dependencies = [
     "polars>=1.29.0",
     "pymc>=5.22.0",
     "rpy2-arrow>=0.1.2",
+    "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",
 ]
